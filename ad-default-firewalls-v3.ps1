@@ -1,0 +1,449 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+  Configure scoped local firewall rules for a CCDC Active Directory domain controller.
+.EXAMPLE
+  .\ad-default-firewalls.ps1 -ClientNetworks 10.20.0.0/16 -Preview
+.EXAMPLE
+  .\ad-default-firewalls.ps1 -ClientNetworks 10.20.0.0/16 -PeerDCAddresses 10.30.0.10,10.30.0.11
+.EXAMPLE
+  .\ad-default-firewalls.ps1 -ClientNetworks 10.20.0.0/16 -ManagementHosts 10.20.1.5 -IncludeLDAPS -IncludeGlobalCatalog -IncludeADWS -IncludeWinRMHTTPS
+.EXAMPLE
+  .\ad-default-firewalls.ps1 -ClientNetworks 10.20.0.0/16 -ManagementHosts 10.20.1.5 -IncludeWinRM -DisableNonScriptInboundAllowRules -Preview
+.EXAMPLE
+  .\ad-default-firewalls.ps1 -ClientNetworks 10.20.0.0/16 -ManagementHosts 10.20.1.5 -IncludeWinRM -DisableNonScriptInboundAllowRules -ConfirmCleanup
+.NOTES
+  Rollback (elevated console): netsh advfirewall import "C:\path\firewall-TIMESTAMP.wfw"
+  Import restores local policy; Group Policy can reapply afterward. Test RPC, DNS,
+  Group Policy, DC replication, and remote access. Firewall settings alone cannot
+  guarantee AD functionality. ProgramData obscurity is not security; protect backups.
+#>
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+param(
+    [Parameter()][ValidateNotNullOrEmpty()]
+    [string]$BackupDirectory = 'C:\ProgramData\Microsoft\Windows\WlanSvc\PolicyStore',
+    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()]
+    [string[]]$ClientNetworks,
+    [Parameter()][string[]]$PeerDCAddresses,
+    [Parameter()][string[]]$ManagementHosts,
+    [Parameter()][switch]$IncludeLDAPS,
+    [Parameter()][switch]$IncludeGlobalCatalog,
+    [Parameter()][switch]$IncludeSecureGlobalCatalog,
+    [Parameter()][switch]$IncludeADWS,
+    [Parameter()][switch]$IncludeLegacyNetBIOS,
+    [Parameter()][switch]$IncludeICMP,
+    [Parameter()][switch]$IncludeWinRM,
+    [Parameter()][switch]$IncludeWinRMHTTPS,
+    [Parameter()][switch]$IncludeRDP,
+    [Parameter()][switch]$ExcludeNTP,
+    [Parameter()][Alias('DisableOtherRules', 'Cleanup')]
+    [switch]$DisableNonScriptInboundAllowRules,
+    [Parameter()][switch]$ConfirmCleanup,
+    [Parameter()][switch]$Preview
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$dryRun = [bool]($Preview -or $WhatIfPreference)
+$backup = $null
+$ruleGroup = 'CCDC AD Firewall'
+
+function Write-Stage([int]$Number, [string]$Text) {
+    Write-Host ("`n[{0}/4] {1}" -f $Number, $Text) -ForegroundColor Cyan
+}
+
+function Assert-Addresses([string[]]$Values, [string]$Label) {
+    foreach ($value in $Values) {
+        if ([string]::IsNullOrWhiteSpace($value)) { throw "$Label contains an empty address." }
+        $parts = $value.Split('/')
+        if ($parts.Count -gt 2) { throw "Invalid $Label address: $value" }
+        $ip = $null
+        if (-not [Net.IPAddress]::TryParse($parts[0], [ref]$ip)) {
+            throw "$Label requires literal IP addresses or CIDR subnets: $value"
+        }
+        if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+            $parts[0] -notmatch '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$') {
+            throw "$Label requires dotted-decimal IPv4 addresses: $value"
+        }
+        if ($parts.Count -eq 2) {
+            $prefix = 0
+            $limit = if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) { 32 } else { 128 }
+            if (-not [int]::TryParse($parts[1], [ref]$prefix) -or $prefix -lt 1 -or $prefix -gt $limit) {
+                throw "Invalid or unrestricted $Label CIDR prefix: $value"
+            }
+        } elseif ($ip.Equals([Net.IPAddress]::Any) -or $ip.Equals([Net.IPAddress]::IPv6Any)) {
+            throw "$Label cannot contain an unspecified address: $value"
+        }
+    }
+}
+
+function New-Spec([string]$Suffix, [string]$Protocol, [string]$Port, [string[]]$Sources) {
+    [pscustomobject]@{
+        Name = "CCDC-AD-DC-In-$Suffix"
+        DisplayName = "CCDC AD DC inbound $Suffix"
+        Protocol = $Protocol
+        LocalPort = $Port
+        Sources = @($Sources)
+    }
+}
+
+function Get-ExactRule([string]$Name, [string]$Store) {
+    # Unary comma preserves an empty or single-item array under StrictMode in PS 5.1.
+    return ,@(Get-NetFirewallRule -PolicyStore $Store -ErrorAction Stop | Where-Object { $_.Name -ceq $Name })
+}
+
+function ConvertTo-CanonicalAddressScope([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
+    if ($Value -eq 'Any') { return 'Any' }
+
+    $parts = $Value.Split('/')
+    $ip = $null
+    if (-not [Net.IPAddress]::TryParse($parts[0], [ref]$ip)) { return $Value.ToLowerInvariant() }
+    if ($parts.Count -eq 1) { return $ip.ToString() }
+
+    $prefix = $null
+    if ([int]::TryParse($parts[1], [ref]$prefix)) {
+        $limit = if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) { 32 } else { 128 }
+        if ($prefix -lt 0 -or $prefix -gt $limit) { return $Value.ToLowerInvariant() }
+    } else {
+        $mask = $null
+        if ($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+            -not [Net.IPAddress]::TryParse($parts[1], [ref]$mask) -or
+            $mask.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+            return $Value.ToLowerInvariant()
+        }
+        $prefix = 0
+        $seenZero = $false
+        foreach ($byte in $mask.GetAddressBytes()) {
+            for ($bit = 7; $bit -ge 0; $bit--) {
+                if (($byte -band (1 -shl $bit)) -ne 0) {
+                    if ($seenZero) { return $Value.ToLowerInvariant() }
+                    $prefix++
+                } else { $seenZero = $true }
+            }
+        }
+    }
+
+    if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) {
+        $bytes = $ip.GetAddressBytes()
+        $remaining = $prefix
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            $bits = [Math]::Max(0, [Math]::Min(8, $remaining))
+            # Do not use an inline if-expression: Windows PowerShell 5.1
+            # parses that differently from PowerShell 7.
+            $networkMask = 0
+            if ($bits -ne 0) {
+                $networkMask = (0xFF -shl (8 - $bits)) -band 0xFF
+            }
+            $bytes[$i] = [byte]($bytes[$i] -band $networkMask)
+            $remaining -= $bits
+        }
+        $ip = New-Object Net.IPAddress(,$bytes)
+    }
+    return "$($ip.ToString())/$prefix"
+}
+
+function Get-CanonicalAddressSet([object]$Addresses) {
+    return @($Addresses | ForEach-Object { ConvertTo-CanonicalAddressScope ([string]$_) } |
+        Sort-Object -Unique)
+}
+
+function Test-Configuration($Rule, $Spec) {
+    if ($null -eq $Rule -or $Rule.Name -cne $Spec.Name -or $Rule.Group -cne $ruleGroup -or
+        $Rule.Direction -ne 'Inbound' -or
+        $Rule.Action -ne 'Allow' -or [string]$Rule.Enabled -ne 'True' -or
+        [string]$Rule.Profile -ne 'Any') { return $false }
+    $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop
+    $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop
+    $application = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop
+    $service = Get-NetFirewallServiceFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop
+    $actualRemote = Get-CanonicalAddressSet $address.RemoteAddress
+    $expectedRemote = Get-CanonicalAddressSet $Spec.Sources
+    $actualLocal = Get-CanonicalAddressSet $address.LocalAddress
+    if ([string]$port.Protocol -ne $Spec.Protocol -or
+        (@($actualRemote) -join ',') -ne (@($expectedRemote) -join ',') -or
+        (@($actualLocal) -join ',') -ne 'Any' -or
+        [string]$application.Program -ne 'Any' -or [string]$service.Service -ne 'Any') { return $false }
+    if ($Spec.Protocol -eq 'ICMPv4') { return (@($port.IcmpType) -join ',') -eq '8' }
+    return ((@($port.LocalPort) -join ',') -eq $Spec.LocalPort -and
+        (@($port.RemotePort) -join ',') -eq 'Any')
+}
+
+function Assert-EffectiveRule($Spec) {
+    $found = Get-ExactRule $Spec.Name 'ActiveStore'
+    if ($found.Count -ne 1 -or -not (Test-Configuration $found[0] $Spec)) {
+        throw "Rule $($Spec.Name) is not effective as configured. Check Group Policy merging and blocking rules."
+    }
+}
+
+function Get-EnabledRuleSummary {
+    foreach ($rule in Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop) {
+        $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+        $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+        $ports = if ([string]$port.Protocol -eq 'ICMPv4') {
+            "ICMPv4/type:$(@($port.IcmpType) -join ',')"
+        } else {
+            "$($port.Protocol)/local:$(@($port.LocalPort) -join ',')/remote:$(@($port.RemotePort) -join ',')"
+        }
+        [pscustomobject]@{
+            Name = [string]$rule.Name
+            ProtocolPorts = $ports
+            LocalScope = @($address.LocalAddress) -join ','
+            RemoteScope = @($address.RemoteAddress) -join ','
+        }
+    }
+}
+
+function Save-FirewallBackup([string]$Directory, [object[]]$Summary) {
+    New-Item -ItemType Directory -Path $Directory -Force -ErrorAction Stop | Out-Null
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $tag = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $exportPath = Join-Path $Directory "firewall-$stamp-$tag.wfw"
+    $reportPath = Join-Path $Directory "enabled-rules-$stamp-$tag.txt"
+    & netsh.exe advfirewall export $exportPath | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exportPath) -or
+        (Get-Item -LiteralPath $exportPath).Length -le 0) {
+        throw "Firewall export failed; no firewall changes were made. Check $exportPath"
+    }
+    $lines = @('Name' + "`t" + 'Protocol/Ports' + "`t" + 'Local Scope' + "`t" + 'Remote Scope')
+    foreach ($entry in $Summary) {
+        $lines += (@($entry.Name, $entry.ProtocolPorts, $entry.LocalScope, $entry.RemoteScope) -join "`t")
+    }
+    $lines | Set-Content -LiteralPath $reportPath -Encoding UTF8 -ErrorAction Stop
+    if ((Get-Item -LiteralPath $reportPath).Length -le 0) { throw "Rule report failed: $reportPath" }
+    [pscustomobject]@{ Export = $exportPath; Report = $reportPath }
+}
+
+function Ensure-Rule($Spec) {
+    $existing = Get-ExactRule $Spec.Name 'PersistentStore'
+    if ($existing.Count -gt 1) { throw "Duplicate internal rule name: $($Spec.Name)" }
+    if ($existing.Count -eq 1 -and $existing[0].Group -cne $ruleGroup) {
+        throw "Internal rule name collision: $($Spec.Name)"
+    }
+    if ($dryRun) {
+        Write-Host "Would ensure $($Spec.Name) $($Spec.Protocol)/$($Spec.LocalPort) from $(@($Spec.Sources) -join ',')" -ForegroundColor Yellow
+        return
+    }
+    if (-not $PSCmdlet.ShouldProcess($Spec.Name, 'Create or update scoped inbound Allow rule')) { return }
+
+    # Set-NetFirewallRule supports protocol, ports, ICMP type, and address scope in its
+    # ByName parameter set; do not combine filter InputObject parameter sets here.
+    $settings = @{
+        PolicyStore = 'PersistentStore'; Name = $Spec.Name; Enabled = 'True';
+        Direction = 'Inbound'; Action = 'Allow'; Profile = 'Any';
+        Protocol = $Spec.Protocol; LocalAddress = 'Any'; RemoteAddress = $Spec.Sources;
+        Program = 'Any'; Service = 'Any'; Confirm = $false; ErrorAction = 'Stop'
+    }
+    if ($Spec.Protocol -eq 'ICMPv4') { $settings.IcmpType = '8' }
+    else { $settings.LocalPort = $Spec.LocalPort; $settings.RemotePort = 'Any' }
+    if ($existing.Count -eq 1) {
+        # Keep the rule disabled while changing transport and scope. A failed update
+        # leaves the old rule disabled instead of briefly widening an active allow.
+        Set-NetFirewallRule -PolicyStore PersistentStore -Name $Spec.Name -Enabled False -Confirm:$false -ErrorAction Stop
+        $settings.Enabled = 'False'
+        $settings.NewDisplayName = $Spec.DisplayName
+        Set-NetFirewallRule @settings | Out-Null
+        Set-NetFirewallRule -PolicyStore PersistentStore -Name $Spec.Name -Enabled True -Confirm:$false -ErrorAction Stop
+    } else {
+        $settings.DisplayName = $Spec.DisplayName
+        $settings.Group = $ruleGroup
+        New-NetFirewallRule @settings | Out-Null
+    }
+    $local = Get-ExactRule $Spec.Name 'PersistentStore'
+    if ($local.Count -ne 1 -or -not (Test-Configuration $local[0] $Spec)) {
+        throw "Local rule verification failed: $($Spec.Name)"
+    }
+    Assert-EffectiveRule $Spec
+}
+
+try {
+    Assert-Addresses $ClientNetworks 'ClientNetworks'
+    if ($PeerDCAddresses) { Assert-Addresses $PeerDCAddresses 'PeerDCAddresses' }
+    if ($ManagementHosts) { Assert-Addresses $ManagementHosts 'ManagementHosts' }
+    if (($IncludeADWS -or $IncludeWinRM -or $IncludeWinRMHTTPS -or $IncludeRDP) -and -not $ManagementHosts) {
+        throw 'Management switches require -ManagementHosts with IP addresses or CIDR subnets.'
+    }
+    if ($DisableNonScriptInboundAllowRules -and -not $dryRun -and -not $ConfirmCleanup) {
+        throw 'Cleanup requires -ConfirmCleanup. Review -Preview output first.'
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Run from an elevated Windows PowerShell 5.1 session.'
+    }
+
+    $clientScope = @($ClientNetworks + $PeerDCAddresses | Select-Object -Unique)
+    $managementScope = @($ManagementHosts | Select-Object -Unique)
+    $specs = @(
+        New-Spec 'TCP-53' 'TCP' '53' $clientScope
+        New-Spec 'UDP-53' 'UDP' '53' $clientScope
+        New-Spec 'TCP-88' 'TCP' '88' $clientScope
+        New-Spec 'UDP-88' 'UDP' '88' $clientScope
+        New-Spec 'TCP-135' 'TCP' '135' $clientScope
+        New-Spec 'TCP-389' 'TCP' '389' $clientScope
+        New-Spec 'UDP-389' 'UDP' '389' $clientScope
+        New-Spec 'TCP-445' 'TCP' '445' $clientScope
+        New-Spec 'TCP-464' 'TCP' '464' $clientScope
+        New-Spec 'UDP-464' 'UDP' '464' $clientScope
+        New-Spec 'TCP-RPC-Dynamic' 'TCP' '49152-65535' $clientScope
+    )
+    if (-not $ExcludeNTP) { $specs += New-Spec 'UDP-123' 'UDP' '123' $clientScope }
+    if ($IncludeLDAPS) { $specs += New-Spec 'TCP-636' 'TCP' '636' $clientScope }
+    if ($IncludeGlobalCatalog) { $specs += New-Spec 'TCP-3268' 'TCP' '3268' $clientScope }
+    if ($IncludeSecureGlobalCatalog) { $specs += New-Spec 'TCP-3269' 'TCP' '3269' $clientScope }
+    if ($IncludeLegacyNetBIOS) {
+        $specs += New-Spec 'UDP-137-138' 'UDP' '137-138' $clientScope
+        $specs += New-Spec 'TCP-139' 'TCP' '139' $clientScope
+    }
+    if ($IncludeICMP) { $specs += New-Spec 'ICMPv4-Echo' 'ICMPv4' '8' $clientScope }
+    if ($IncludeADWS) { $specs += New-Spec 'TCP-9389' 'TCP' '9389' $managementScope }
+    if ($IncludeWinRM) { $specs += New-Spec 'TCP-5985' 'TCP' '5985' $managementScope }
+    if ($IncludeWinRMHTTPS) { $specs += New-Spec 'TCP-5986' 'TCP' '5986' $managementScope }
+    if ($IncludeRDP) { $specs += New-Spec 'TCP-3389' 'TCP' '3389' $managementScope }
+
+    # Optional rules from a previous run must not remain enabled when omitted now.
+    $conditionalNames = @(
+        'UDP-123', 'TCP-636', 'TCP-3268', 'TCP-3269', 'UDP-137-138',
+        'TCP-139', 'ICMPv4-Echo', 'TCP-9389', 'TCP-5985', 'TCP-5986', 'TCP-3389'
+    ) | ForEach-Object { "CCDC-AD-DC-In-$_" }
+    $selectedNames = @($specs | ForEach-Object { $_.Name })
+    $legacyPorts = @{
+        'AD-Required-Inbound-TCP-53' = 'TCP:53'; 'AD-Required-Inbound-UDP-53' = 'UDP:53'
+        'AD-Required-Inbound-TCP-88' = 'TCP:88'; 'AD-Required-Inbound-UDP-88' = 'UDP:88'
+        'AD-Required-Inbound-TCP-135' = 'TCP:135'; 'AD-Required-Inbound-TCP-389' = 'TCP:389'
+        'AD-Required-Inbound-UDP-389' = 'UDP:389'; 'AD-Required-Inbound-TCP-445' = 'TCP:445'
+        'AD-Required-Inbound-TCP-464' = 'TCP:464'; 'AD-Required-Inbound-UDP-464' = 'UDP:464'
+        'AD-Required-Inbound-TCP-636' = 'TCP:636'; 'AD-Required-Inbound-TCP-3268' = 'TCP:3268'
+        'AD-Required-Inbound-TCP-3269' = 'TCP:3269'; 'AD-Required-Inbound-TCP-RPC' = 'TCP:49152-65535'
+    }
+
+    $allLocal = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop)
+    foreach ($spec in $specs) {
+        $matches = @($allLocal | Where-Object { $_.Name -ceq $spec.Name })
+        if ($matches.Count -gt 1 -or ($matches.Count -eq 1 -and $matches[0].Group -cne $ruleGroup)) {
+            throw "Conflicting local rule: $($spec.Name). No firewall changes were made."
+        }
+    }
+    foreach ($name in $conditionalNames) {
+        $matches = @($allLocal | Where-Object { $_.Name -ceq $name })
+        if ($matches.Count -gt 1 -or ($matches.Count -eq 1 -and $matches[0].Group -cne $ruleGroup)) {
+            throw "Conflicting local rule: $name. No firewall changes were made."
+        }
+    }
+    $legacyRules = @($allLocal | Where-Object {
+        $_.Group -ceq $ruleGroup -and $legacyPorts.ContainsKey($_.DisplayName) -and
+        $_.Name -notlike 'CCDC-AD-DC-In-*' -and
+        [string]$_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow'
+    })
+    foreach ($rule in $legacyRules) {
+        $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+        $signature = "$($port.Protocol):$(@($port.LocalPort) -join ',')"
+        if ($signature -ne $legacyPorts[$rule.DisplayName]) {
+            throw "Legacy rule $($rule.Name) differs from the prior script's port configuration. Review it manually before continuing."
+        }
+    }
+    $legacyDuplicateNames = @($legacyRules | Group-Object -Property Name | Where-Object { $_.Count -gt 1 })
+    if ($legacyDuplicateNames.Count -gt 0) { throw 'Duplicate legacy internal rule names; refusing ambiguous migration.' }
+
+    Write-Stage 1 'Back up original policy and report enabled effective rules'
+    $summary = @(Get-EnabledRuleSummary)
+    if ($dryRun) {
+        Write-Host "Would export .wfw and write timestamped .txt report in $BackupDirectory" -ForegroundColor Yellow
+    } else {
+        $backup = Save-FirewallBackup $BackupDirectory $summary
+        Write-Host "Backup: $($backup.Export)" -ForegroundColor Green
+        Write-Host "Report: $($backup.Report)" -ForegroundColor Green
+    }
+    $summary | Format-Table -AutoSize Name, ProtocolPorts, LocalScope, RemoteScope
+
+    Write-Stage 2 'Create or update scoped AD inbound rules and verify effective policy'
+    foreach ($spec in $specs) { Ensure-Rule $spec }
+    foreach ($rule in $legacyRules) {
+        if ($dryRun) {
+            Write-Host "Would disable replaced legacy AD rule $($rule.Name) ($($rule.DisplayName))" -ForegroundColor Yellow
+        } elseif ($PSCmdlet.ShouldProcess($rule.Name, 'Disable replaced legacy AD inbound rule')) {
+            Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -Enabled False -Confirm:$false -ErrorAction Stop
+        }
+    }
+    foreach ($name in $conditionalNames) {
+        if ($selectedNames -contains $name) { continue }
+        $prior = Get-ExactRule $name 'PersistentStore'
+        if ($prior.Count -eq 1 -and [string]$prior[0].Enabled -eq 'True') {
+            if ($dryRun) {
+                Write-Host "Would disable omitted optional rule $name" -ForegroundColor Yellow
+            } elseif ($PSCmdlet.ShouldProcess($name, 'Disable previously selected optional rule')) {
+                Set-NetFirewallRule -PolicyStore PersistentStore -Name $name -Enabled False -Confirm:$false -ErrorAction Stop
+            }
+        }
+    }
+
+    Write-Stage 3 'Enable all profiles and set default inbound Block'
+    if ($dryRun) {
+        Write-Host 'Would enable Domain, Private, Public and set default inbound Block.' -ForegroundColor Yellow
+    } else {
+        foreach ($spec in $specs) { Assert-EffectiveRule $spec }
+        foreach ($name in @('Domain', 'Private', 'Public')) {
+            if ($PSCmdlet.ShouldProcess($name, 'Enable firewall and set default inbound Block')) {
+                Set-NetFirewallProfile -PolicyStore PersistentStore -Name $name -Enabled True -DefaultInboundAction Block -Confirm:$false -ErrorAction Stop
+            }
+        }
+        foreach ($name in @('Domain', 'Private', 'Public')) {
+            $profile = Get-NetFirewallProfile -PolicyStore ActiveStore -Name $name -ErrorAction Stop
+            if ([string]$profile.Enabled -ne 'True' -or [string]$profile.DefaultInboundAction -ne 'Block') {
+                throw "Effective $name profile is not enabled with inbound Block. Check Group Policy."
+            }
+            if ([string]$profile.AllowInboundRules -eq 'False' -or
+                [string]$profile.AllowLocalFirewallRules -eq 'False') {
+                throw "Effective $name profile ignores local inbound Allow rules. Check Group Policy before proceeding."
+            }
+            if ([string]$profile.DefaultOutboundAction -ne 'Allow') {
+                Write-Warning "$name effective default outbound policy is not Allow; this script did not change it."
+            }
+        }
+    }
+
+    Write-Stage 4 'Optionally disable other enabled local inbound Allow rules'
+    if ($DisableNonScriptInboundAllowRules) {
+        Write-Warning 'Cleanup can disrupt other services and remote administration. Review targets and retain console access.'
+        $candidates = @(
+            Get-NetFirewallRule -PolicyStore PersistentStore -Direction Inbound -Enabled True -Action Allow -ErrorAction Stop |
+                Where-Object {
+                    # Rules in the script-owned group are preserved. All other
+                    # enabled local inbound Allow rules are cleanup targets.
+                    return ($_.Group -cne $ruleGroup)
+                }
+        )
+        if ($candidates.Count -eq 0) {
+            Write-Host 'No other enabled local inbound Allow rules found.'
+        } else {
+            Write-Host 'Exact local rules targeted for disabling:' -ForegroundColor Yellow
+            $duplicateTargets = @($candidates | Group-Object -Property Name | Where-Object { $_.Count -gt 1 })
+            if ($duplicateTargets.Count -gt 0) { throw 'Duplicate local rule names found in cleanup targets; refusing ambiguous changes.' }
+            foreach ($rule in $candidates) {
+                Write-Host ("Name={0}; DisplayName={1}; Direction={2}; Action={3}; Enabled={4}" -f
+                    $rule.Name, $rule.DisplayName, $rule.Direction, $rule.Action, $rule.Enabled)
+            }
+            if (-not $dryRun) {
+                $disabled = 0
+                foreach ($rule in $candidates) {
+                    if ($PSCmdlet.ShouldProcess($rule.Name, 'Disable local inbound Allow rule')) {
+                        Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -Enabled False -Confirm:$false -ErrorAction Stop
+                        $disabled++
+                    }
+                }
+                Write-Host "Disabled $disabled local inbound Allow rule(s)." -ForegroundColor Green
+            }
+        }
+    } else {
+        Write-Host 'Cleanup was not selected.'
+        Write-Warning 'Other existing inbound Allow rules may still permit these ports from broader networks. Review the saved rule report.'
+    }
+
+    if ($backup) { Write-Host "Rollback (elevated): netsh advfirewall import `"$($backup.Export)`"" -ForegroundColor Magenta }
+    Write-Host 'Test RPC, DNS, Group Policy, DC replication and remote access from intended sources; firewall changes alone cannot guarantee AD functionality.'
+    Write-Host 'ProgramData obscurity is not security. Protect and copy the backup.'
+} catch {
+    Write-Warning "Firewall configuration stopped: $($_.Exception.Message)"
+    if ($backup) { Write-Host "Rollback (elevated): netsh advfirewall import `"$($backup.Export)`"" -ForegroundColor Magenta }
+    throw
+}
