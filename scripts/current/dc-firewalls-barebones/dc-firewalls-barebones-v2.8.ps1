@@ -6,8 +6,9 @@
 .DESCRIPTION
   With no parameters, detects the primary IPv4 subnet, creates the barebones
   AD rules, verifies them, and disables other enabled local inbound rules.
-  -ClientNetworks replaces the detected subnet with explicit IPv4 addresses
-  or scopes. -Modify updates only currently enabled local barebones rules.
+  -ClientNetworks optionally replaces the detected subnet with explicit IPv4
+  addresses or scopes. -Modify updates only enabled local barebones rules and
+  requires an explicit -ClientNetworks value.
 #>
 [CmdletBinding()]
 param(
@@ -295,12 +296,13 @@ try {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required firewall cmdlet is unavailable: $command" }
     }
 
-    if ($Modify -and @($ClientNetworks).Count -eq 0) {
+    $providedNetworks = @($ClientNetworks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($Modify -and $providedNetworks.Count -eq 0) {
         throw '-Modify requires -ClientNetworks with one or more IPv4 addresses or scopes.'
     }
-    if (@($ClientNetworks).Count -gt 0) {
-        Assert-IPv4Scopes $ClientNetworks 'ClientNetworks'
-        $remoteScope = ConvertTo-FirewallIPv4Scope $ClientNetworks
+    if ($providedNetworks.Count -gt 0) {
+        Assert-IPv4Scopes $providedNetworks 'ClientNetworks'
+        $remoteScope = ConvertTo-FirewallIPv4Scope $providedNetworks
         $subnetValue = $null
     } else {
         $subnetValue = Resolve-Subnet
