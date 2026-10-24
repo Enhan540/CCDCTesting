@@ -267,6 +267,22 @@ function Assert-CreatedRule($Spec) {
     if ($fail.Count -gt 0) { throw "Verification failed for $($Spec.Name): $($fail -join '; ')" }
 }
 
+function Write-ModifyChangeReport([string]$Path, [object[]]$Changes) {
+    $lines = @(
+        'CCDC DC Barebones remote-address modification'
+        ("Created: {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+        ''
+        'Rule Name | Protocol | Local Port | Remote Address: Before --> After | Status'
+        ('-' * 120)
+    )
+    foreach ($change in $Changes) {
+        $line = "{0} | {1} | {2} | {3} --> {4} | {5}" -f $change.Name,$change.Protocol,$change.LocalPort,$change.Before,$change.After,$change.Status
+        if (-not [string]::IsNullOrWhiteSpace([string]$change.Error)) { $line += " | Error: $($change.Error)" }
+        $lines += $line
+    }
+    $lines | Set-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop
+}
+
 function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
     $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $ruleGroup -Direction Inbound -Enabled True -ErrorAction Stop |
         Where-Object { $_.Name -like "$scriptPrefix*" })
@@ -275,14 +291,46 @@ function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
     }
 
     $expected = (Get-CanonicalSet $RemoteScope) -join ','
-    foreach ($rule in $rules) {
-        Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -RemoteAddress ([string[]]$RemoteScope) -Confirm:$false -ErrorAction Stop
-        $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
-        $actual = (Get-CanonicalSet $address.RemoteAddress) -join ','
-        if ($actual -ne $expected) {
-            throw "Modification verification failed for $($rule.Name): RemoteAddress expected $expected but was $actual."
+    $changes = @(
+        foreach ($rule in $rules) {
+            $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+            $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+            [pscustomobject]@{
+                Name = [string]$rule.Name
+                Protocol = [string]$port.Protocol
+                LocalPort = (@($port.LocalPort) -join ',')
+                Before = ((Get-CanonicalSet $address.RemoteAddress) -join ',')
+                After = $expected
+                Status = 'Pending'
+                Error = ''
+                Rule = $rule
+            }
         }
-        Write-Host "Updated $($rule.Name) -> $expected" -ForegroundColor Green
+    )
+
+    # Save the original firewall state and the planned changes before editing any rule.
+    $backup = Export-Policy $backupDirectory 'firewall-modify-before' @(Get-RuleReport)
+    Write-ModifyChangeReport $backup.Txt $changes
+    Write-Host "Modification backup: $($backup.Wfw)" -ForegroundColor Green
+    Write-Host "Change report: $($backup.Txt)" -ForegroundColor Green
+
+    foreach ($change in $changes) {
+        try {
+            Set-NetFirewallRule -PolicyStore PersistentStore -Name $change.Name -RemoteAddress ([string[]]$RemoteScope) -Confirm:$false -ErrorAction Stop
+            $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $change.Rule -ErrorAction Stop
+            $actual = (Get-CanonicalSet $address.RemoteAddress) -join ','
+            if ($actual -ne $expected) {
+                throw "RemoteAddress expected $expected but was $actual."
+            }
+            $change.Status = 'Updated and verified'
+            Write-Host "Updated $($change.Name) -> $expected" -ForegroundColor Green
+        } catch {
+            $change.Status = 'Failed'
+            $change.Error = $_.Exception.Message
+            Write-ModifyChangeReport $backup.Txt $changes
+            throw "Modification failed for $($change.Name): $($_.Exception.Message) Backup: $($backup.Wfw)"
+        }
+        Write-ModifyChangeReport $backup.Txt $changes
     }
     Write-Host ("Modified {0} enabled local barebones rule(s)." -f $rules.Count) -ForegroundColor Green
 }
