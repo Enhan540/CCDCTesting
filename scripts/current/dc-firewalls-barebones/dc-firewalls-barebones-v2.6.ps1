@@ -4,18 +4,25 @@
   Barebones scoped firewall policy for a CCDC Active Directory domain controller.
 
 .DESCRIPTION
-  Runs without parameters. It detects the primary IPv4 subnet, creates the
-  barebones AD rules, verifies them, and disables other enabled local inbound
-  rules without prompting.
+  With no parameters, detects the primary IPv4 subnet, creates the barebones
+  AD rules, verifies them, and disables other enabled local inbound rules.
+  -ClientNetworks replaces the detected subnet with explicit IPv4 addresses
+  or scopes. -Modify updates only currently enabled local barebones rules.
 #>
 [CmdletBinding()]
-param()
+param(
+    [string[]]$ClientNetworks,
+    [switch]$Modify
+)
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'Administrator privileges are required. Relaunching with elevation...' -ForegroundColor Yellow
-    $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',("`"{0}`"" -f $PSCommandPath)) -Wait -PassThru
+    $elevatedArguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',("`"{0}`"" -f $PSCommandPath))
+    foreach ($network in @($ClientNetworks)) { $elevatedArguments += @('-ClientNetworks', ("`"{0}`"" -f $network)) }
+    if ($Modify) { $elevatedArguments += '-Modify' }
+    $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $elevatedArguments -Wait -PassThru
     exit $child.ExitCode
 }
 
@@ -239,6 +246,26 @@ function Assert-CreatedRule($Spec) {
     if ($fail.Count -gt 0) { throw "Verification failed for $($Spec.Name): $($fail -join '; ')" }
 }
 
+function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
+    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $ruleGroup -Direction Inbound -Enabled True -ErrorAction Stop |
+        Where-Object { $_.Name -like "$scriptPrefix*" })
+    if ($rules.Count -eq 0) {
+        throw 'No enabled local CCDC DC Barebones rules were found to modify.'
+    }
+
+    $expected = (Get-CanonicalSet $RemoteScope) -join ','
+    foreach ($rule in $rules) {
+        Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -RemoteAddress $RemoteScope -Confirm:$false -ErrorAction Stop
+        $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
+        $actual = (Get-CanonicalSet $address.RemoteAddress) -join ','
+        if ($actual -ne $expected) {
+            throw "Modification verification failed for $($rule.Name): RemoteAddress expected $expected but was $actual."
+        }
+        Write-Host "Updated $($rule.Name) -> $expected" -ForegroundColor Green
+    }
+    Write-Host ("Modified {0} enabled local barebones rule(s)." -f $rules.Count) -ForegroundColor Green
+}
+
 try {
     Write-Step 1 'Check administrator privileges and firewall cmdlets'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -248,8 +275,25 @@ try {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required firewall cmdlet is unavailable: $command" }
     }
 
-    $subnetValue = Resolve-Subnet
-    $remoteScope = @($subnetValue)
+    if ($Modify -and @($ClientNetworks).Count -eq 0) {
+        throw '-Modify requires -ClientNetworks with one or more IPv4 addresses or scopes.'
+    }
+    if (@($ClientNetworks).Count -gt 0) {
+        Assert-IPv4Scopes $ClientNetworks 'ClientNetworks'
+        $remoteScope = @(Get-CanonicalSet $ClientNetworks)
+        $subnetValue = $null
+    } else {
+        $subnetValue = Resolve-Subnet
+        $remoteScope = @($subnetValue)
+    }
+
+    if ($Modify) {
+        Write-Step 1 'Modify enabled local DC barebones rule scopes'
+        Write-Host ("New remote scope: {0}" -f ($remoteScope -join ', ')) -ForegroundColor Gray
+        Update-EnabledBarebonesRules $remoteScope
+        return
+    }
+
     $specs = @(
         (New-ADSpec 'TCP-53' 'TCP' '53' $remoteScope); (New-ADSpec 'UDP-53' 'UDP' '53' $remoteScope)
         (New-ADSpec 'TCP-88' 'TCP' '88' $remoteScope); (New-ADSpec 'UDP-88' 'UDP' '88' $remoteScope)
@@ -270,7 +314,7 @@ try {
     Set-NetFirewallProfile -Name Domain,Private,Public -Enabled True -Confirm:$false -ErrorAction Stop
 
     Write-Step 4 'Record enabled firewall rules'
-    Write-Host ("Detected subnet: {0}" -f $subnetValue) -ForegroundColor Gray
+    if ($subnetValue) { Write-Host ("Detected subnet: {0}" -f $subnetValue) -ForegroundColor Gray }
     Write-Host ("Remote scope: {0}" -f ($remoteScope -join ', ')) -ForegroundColor Gray
     Write-Host ("Enabled rules found: {0}" -f $beforeRules.Count) -ForegroundColor Gray
 
