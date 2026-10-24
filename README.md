@@ -1,6 +1,14 @@
 # CCDC Scripts
 
-This repository publishes Windows PowerShell firewall scripts for use and testing on Windows machines during CCDC competitions. It includes a configurable AD firewall script, a barebones automatically detected-subnet script, report-formatting revisions, and older or untested versions for reference.
+This repository publishes Windows PowerShell scripts to use and test on Windows machines during CCDC competitions. It includes current firewall scripts plus older, previous, and untested versions kept for reference.
+
+## Repository layout
+
+- `scripts/current/ad-default-firewalls/` — current configurable AD firewall revisions.
+- `scripts/current/dc-firewalls-barebones/` — current automatic-subnet barebones revisions.
+- `archive/older-scripts/` — earlier general CCDC scripts.
+- `archive/previous-versions/` — previous AD firewall versions.
+- `archive/untested/` — scripts not yet validated for regular use.
 
 ## Barebones scripts
 
@@ -9,13 +17,13 @@ The barebones script automatically detects the machine's primary IPv4 subnet, cr
 PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.5.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v2.5.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v2.5.ps1
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v2.5.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v2.5.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v2.5.ps1
 ```
 
 cmd — download and run:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.5.ps1' -OutFile '.\dc-firewalls-barebones-v2.5.ps1'; & '.\dc-firewalls-barebones-v2.5.ps1'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v2.5.ps1' -OutFile '.\dc-firewalls-barebones-v2.5.ps1'; & '.\dc-firewalls-barebones-v2.5.ps1'"
 ```
 
 ## Configurable AD firewall scripts
@@ -25,13 +33,13 @@ The configurable script creates scoped AD service rules using supplied client ne
 PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.3.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.3.ps1 -ClientNetworks 192.168.5.0/24
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/ad-default-firewalls/ad-default-firewalls-v11.3.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.3.ps1 -ClientNetworks 192.168.5.0/24
 ```
 
 cmd — download and run:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.3.ps1' -OutFile '.\ad-default-firewalls-v11.3.ps1'; & '.\ad-default-firewalls-v11.3.ps1' -ClientNetworks '192.168.5.0/24'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/ad-default-firewalls/ad-default-firewalls-v11.3.ps1' -OutFile '.\ad-default-firewalls-v11.3.ps1'; & '.\ad-default-firewalls-v11.3.ps1' -ClientNetworks '192.168.5.0/24'"
 ```
 
 ## Quick guide
@@ -42,10 +50,8 @@ The configurable script requires `-ClientNetworks`. The barebones script require
 
 ## Included files
 
-- `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.3.ps1` — configurable AD firewall revisions; later versions include improved reports, self-elevation, and PowerShell 5.1 formatting fixes.
-- `dc-firewalls-barebones-v2.ps1` through `dc-firewalls-barebones-v2.5.ps1` — minimal automatically detected-subnet revisions.
-- `older scripts` — earlier versions retained for reference.
-- `prev versions` — previous project versions.
-- `untested` — scripts not yet validated for regular use.
+- `scripts/current/ad-default-firewalls/` — `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.3.ps1`.
+- `scripts/current/dc-firewalls-barebones/` — `dc-firewalls-barebones-v2.ps1` through `dc-firewalls-barebones-v2.5.ps1`.
+- `archive/older-scripts/`, `archive/previous-versions/`, and `archive/untested/` — retained reference material.
 
 The `.1` versions change the TXT report layout only. They use aligned fixed-width tables, sort rules by local port, and shorten displayed rule names; they do not intentionally change firewall behavior.
