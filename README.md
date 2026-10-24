@@ -1,40 +1,51 @@
-# CCDC Firewall Scripts
+# CCDC Scripts
 
-These scripts configure inbound Windows Firewall rules for an Active Directory domain controller during CCDC competitions.
+This repository publishes Windows PowerShell firewall scripts for use and testing on Windows machines during CCDC competitions. It includes a configurable AD firewall script, a barebones automatically detected-subnet script, report-formatting revisions, and older or untested versions for reference.
 
-## Scripts
+## Barebones scripts
 
-- `ad-default-firewalls-v11.ps1` — Configures scoped AD firewall rules, supports optional management services and cleanup, and creates backups. Its TXT reports use the original tab-separated format.
-- `ad-default-firewalls-v11.1.ps1` — Same firewall behavior as v11, but its before/after TXT reports use aligned fixed-width tables sorted by local port, with displayed rule names limited to 15 characters.
-- `ad-default-firewalls-v11.2.ps1` — Same behavior and report format as v11.1, but automatically relaunches itself with Administrator privileges when needed.
-- `dc-firewalls-barebones-v2.ps1` — Automatically detects the local subnet, creates a minimal AD rule set, verifies the rules, disables other local inbound rules, and creates backups.
-- `dc-firewalls-barebones-v2.1.ps1` — Same firewall behavior as barebones v2, but with cleaner aligned, port-sorted TXT reports and shortened displayed rule names.
-- `dc-firewalls-barebones-v2.2.ps1` — Same behavior and report format as v2.1, but automatically relaunches itself with Administrator privileges when needed.
+The barebones script automatically detects the machine's primary IPv4 subnet, creates a minimal AD firewall policy, verifies the created rules, disables other local inbound rules, and creates before/after backups.
 
-Run these only from an elevated Administrator console on the target Windows Server. Review backups and maintain console or out-of-band access before applying firewall changes.
-
-## Download and run
-
-PowerShell — `ad-default-firewalls-v11.2.ps1`:
+PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.2.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.2.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.2.ps1 -ClientNetworks 192.168.5.0/24
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.3.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v2.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v2.3.ps1
 ```
 
-cmd — `ad-default-firewalls-v11.2.ps1`:
+cmd — download and run:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.2.ps1' -OutFile '.\ad-default-firewalls-v11.2.ps1'; & '.\ad-default-firewalls-v11.2.ps1' -ClientNetworks '192.168.5.0/24'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.3.ps1' -OutFile '.\dc-firewalls-barebones-v2.3.ps1'; & '.\dc-firewalls-barebones-v2.3.ps1'"
 ```
 
-PowerShell — `dc-firewalls-barebones-v2.2.ps1`:
+## Configurable AD firewall scripts
+
+The configurable script creates scoped AD service rules using supplied client networks, supports selected optional services and cleanup, and creates firewall backups. Version 11.3 includes aligned, port-sorted TXT reports and automatically requests Administrator elevation when needed.
+
+PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.2.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v2.2.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v2.2.ps1
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.3.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.3.ps1 -ClientNetworks 192.168.5.0/24
 ```
 
-cmd — `dc-firewalls-barebones-v2.2.ps1`:
+cmd — download and run:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/dc-firewalls-barebones-v2.2.ps1' -OutFile '.\dc-firewalls-barebones-v2.2.ps1'; & '.\dc-firewalls-barebones-v2.2.ps1'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest 'https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/ad-default-firewalls-v11.3.ps1' -OutFile '.\ad-default-firewalls-v11.3.ps1'; & '.\ad-default-firewalls-v11.3.ps1' -ClientNetworks '192.168.5.0/24'"
 ```
+
+## Quick guide
+
+Run the commands from an Administrator-capable Windows PowerShell or cmd window. The scripts can request elevation when launched normally. Review the preview/options, maintain console or out-of-band access, and locate the generated backups before applying firewall changes.
+
+The configurable script requires `-ClientNetworks`. The barebones script requires no parameters and uses the primary subnet detected from the machine's default IPv4 route.
+
+## Included files
+
+- `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.3.ps1` — configurable AD firewall revisions; later versions include improved reports, self-elevation, and PowerShell 5.1 formatting fixes.
+- `dc-firewalls-barebones-v2.ps1` through `dc-firewalls-barebones-v2.3.ps1` — minimal automatically detected-subnet revisions.
+- `older scripts` — earlier versions retained for reference.
+- `prev versions` — previous project versions.
+- `untested` — scripts not yet validated for regular use.
+
+The `.1` versions change the TXT report layout only. They use aligned fixed-width tables, sort rules by local port, and shorten displayed rule names; they do not intentionally change firewall behavior.
