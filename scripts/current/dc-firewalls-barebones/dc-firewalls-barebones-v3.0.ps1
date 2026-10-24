@@ -308,12 +308,7 @@ function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
         }
     )
 
-    # Save the original firewall state and the planned changes before editing any rule.
-    $backup = Export-Policy $backupDirectory 'firewall-modify-before' @(Get-RuleReport)
-    Write-ModifyChangeReport $backup.Txt $changes
-    Write-Host "Modification backup: $($backup.Wfw)" -ForegroundColor Green
-    Write-Host "Change report: $($backup.Txt)" -ForegroundColor Green
-
+    $modifyError = $null
     foreach ($change in $changes) {
         try {
             Set-NetFirewallRule -PolicyStore PersistentStore -Name $change.Name -RemoteAddress ([string[]]$RemoteScope) -Confirm:$false -ErrorAction Stop
@@ -327,11 +322,17 @@ function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
         } catch {
             $change.Status = 'Failed'
             $change.Error = $_.Exception.Message
-            Write-ModifyChangeReport $backup.Txt $changes
-            throw "Modification failed for $($change.Name): $($_.Exception.Message) Backup: $($backup.Wfw)"
+            $modifyError = "Modification failed for $($change.Name): $($_.Exception.Message)"
+            break
         }
-        Write-ModifyChangeReport $backup.Txt $changes
     }
+
+    # Export the resulting firewall state after all attempted updates, then pair it with the change report.
+    $backup = Export-Policy $backupDirectory 'firewall-modify-after' @(Get-RuleReport)
+    Write-ModifyChangeReport $backup.Txt $changes
+    Write-Host "After-modification backup: $($backup.Wfw)" -ForegroundColor Green
+    Write-Host "Change report: $($backup.Txt)" -ForegroundColor Green
+    if ($modifyError) { throw "$modifyError After-state backup: $($backup.Wfw); change report: $($backup.Txt)" }
     Write-Host ("Modified {0} enabled local barebones rule(s)." -f $rules.Count) -ForegroundColor Green
 }
 
