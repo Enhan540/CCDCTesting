@@ -109,9 +109,29 @@ function Resolve-Subnet {
 
 function Assert-IPv4Scopes([string[]]$Values, [string]$Label) {
     foreach ($value in $Values) {
-        $null = ConvertTo-CanonicalScope $value
-        if ((ConvertTo-CanonicalScope $value) -eq '0.0.0.0/0') { throw "$Label cannot contain /0." }
+        foreach ($entry in ([string]$value -split '[,;]')) {
+            $scope = $entry.Trim()
+            if ([string]::IsNullOrWhiteSpace($scope)) { continue }
+            $canonical = ConvertTo-CanonicalScope $scope
+            if ($canonical -eq '0.0.0.0/0') { throw "$Label cannot contain /0." }
+        }
     }
+}
+
+function ConvertTo-FirewallIPv4Scope([string[]]$Values) {
+    $scopes = @()
+    foreach ($value in $Values) {
+        foreach ($entry in ([string]$value -split '[,;]')) {
+            $scope = $entry.Trim()
+            if ([string]::IsNullOrWhiteSpace($scope)) { continue }
+            $canonical = ConvertTo-CanonicalScope $scope
+            if ($canonical -eq '0.0.0.0/0') { throw 'ClientNetworks cannot contain /0.' }
+            $scopes += [string]$canonical
+        }
+    }
+    $scopes = @($scopes | Sort-Object -Unique)
+    if ($scopes.Count -eq 0) { throw 'ClientNetworks must contain at least one IPv4 address or scope.' }
+    return ,([string[]]$scopes)
 }
 
 function Get-ReportSortKey([string]$LocalPort) {
@@ -215,7 +235,7 @@ function Export-Policy([string]$Directory, [string]$BaseName, [object[]]$Rules) 
 }
 
 function New-ADSpec([string]$Suffix, [string]$Protocol, [string]$Port, [string[]]$Remote) {
-    [pscustomobject]@{ Name = "$scriptPrefix$Suffix"; DisplayName = "CCDC DC Barebones $Suffix"; Protocol = $Protocol; LocalPort = $Port; Remote = @($Remote) }
+    [pscustomobject]@{ Name = "$scriptPrefix$Suffix"; DisplayName = "CCDC DC Barebones $Suffix"; Protocol = $Protocol; LocalPort = $Port; Remote = [string[]]@($Remote) }
 }
 
 function Get-RuleMismatches($Spec, $Rule) {
@@ -255,7 +275,7 @@ function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
 
     $expected = (Get-CanonicalSet $RemoteScope) -join ','
     foreach ($rule in $rules) {
-        Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -RemoteAddress $RemoteScope -Confirm:$false -ErrorAction Stop
+        Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -RemoteAddress ([string[]]$RemoteScope) -Confirm:$false -ErrorAction Stop
         $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $actual = (Get-CanonicalSet $address.RemoteAddress) -join ','
         if ($actual -ne $expected) {
@@ -280,7 +300,7 @@ try {
     }
     if (@($ClientNetworks).Count -gt 0) {
         Assert-IPv4Scopes $ClientNetworks 'ClientNetworks'
-        $remoteScope = @(Get-CanonicalSet $ClientNetworks)
+        $remoteScope = ConvertTo-FirewallIPv4Scope $ClientNetworks
         $subnetValue = $null
     } else {
         $subnetValue = Resolve-Subnet
@@ -339,7 +359,7 @@ try {
             Write-Host "Updating $($spec.Name): $($differences -join '; ')" -ForegroundColor Yellow
             # Disable the existing allow rule before changing its scope and ports.
             Set-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -Enabled False -Confirm:$false -ErrorAction Stop
-            Set-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -Direction Inbound -Action Allow -Profile Any -Protocol $spec.Protocol -LocalPort $spec.LocalPort -RemotePort Any -LocalAddress Any -RemoteAddress $spec.Remote -Program Any -Service Any -Confirm:$false -ErrorAction Stop
+            Set-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -Direction Inbound -Action Allow -Profile Any -Protocol $spec.Protocol -LocalPort $spec.LocalPort -RemotePort Any -LocalAddress Any -RemoteAddress ([string[]]$spec.Remote) -Program Any -Service Any -Confirm:$false -ErrorAction Stop
             Set-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -Enabled True -Confirm:$false -ErrorAction Stop
             continue
         }
@@ -351,7 +371,7 @@ try {
             if ($suffix -gt 1000) { throw "Could not allocate a unique rule name for $baseName." }
             $spec.Name = "$baseName-Managed$suffix"
         }
-        $newRule = New-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -DisplayName $spec.DisplayName -Group $ruleGroup -Enabled True -Direction Inbound -Action Allow -Profile Any -Protocol $spec.Protocol -LocalPort $spec.LocalPort -LocalAddress Any -RemoteAddress $spec.Remote -RemotePort Any -Program Any -Service Any -Confirm:$false -ErrorAction Stop
+        $newRule = New-NetFirewallRule -PolicyStore PersistentStore -Name $spec.Name -DisplayName $spec.DisplayName -Group $ruleGroup -Enabled True -Direction Inbound -Action Allow -Profile Any -Protocol $spec.Protocol -LocalPort $spec.LocalPort -LocalAddress Any -RemoteAddress ([string[]]$spec.Remote) -RemotePort Any -Program Any -Service Any -Confirm:$false -ErrorAction Stop
         $localRules += $newRule
         Write-Host "Created $($spec.Name)" -ForegroundColor Green
     }
