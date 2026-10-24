@@ -38,6 +38,12 @@ Modify existing enabled barebones rules and save an after-change backup:
 PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.0.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
 ```
 
+### Restoring Firewall from Backup
+To restore firewall settings, make sure you have a .wfw backup file. Two should be generated in C:\CCDC\FirewallBackups when using the default setup or with only the -ClientNetworks parameter. Modifying scope of rules will also create a backup file. Use the following command to restore firewall settings from a .wfw file:
+```powershell
+netsh advfirewall import <path\to\wfw_backup>
+```
+
 ## Configurable AD firewall scripts
 
 The configurable script creates scoped AD service rules using supplied client networks, supports selected optional services and cleanup, and creates firewall backups. Version 11.3 includes aligned, port-sorted TXT reports and automatically requests Administrator elevation when needed.
