@@ -12,7 +12,7 @@ This repository publishes Windows PowerShell scripts to use and test on Windows 
 
 ## Barebones scripts
 
-The barebones script detects whether the machine is a Domain Controller or Client. Version 3.3.1 enables all firewall profiles, sets default inbound to Block and outbound to Allow, verifies those settings, then runs the appropriate workflow. All TXT firewall reports include only rules whose Enabled state is True.
+The barebones script detects whether the machine is a Domain Controller or Client. Version 3.3.3 enables all firewall profiles, sets default inbound to Block and outbound to Allow, verifies those settings, then runs the appropriate workflow. All TXT firewall reports include only rules whose Enabled state is True. Export stages show progress and stop with an error if `netsh` does not finish within 60 seconds. Reports separate enabled rules into Inbound and Outbound sections.
 
 ### Barebones parameters
 
@@ -29,25 +29,25 @@ Backup and report filenames include the computer name and `HHmm-MMddyyyy` timest
 PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.1.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v3.3.1.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v3.3.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
 ```
 
 Full setup with explicit addresses instead of the detected subnet:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -ClientNetworks 192.168.5.10,192.168.5.11
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11
 ```
 
 Modify existing enabled barebones rules and save before/after backups:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
 ```
 
 Export only, without changing firewall settings:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -Export
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -Export
 ```
 
 ### Restoring Firewall from Backup
@@ -58,12 +58,12 @@ netsh advfirewall import 'C:\CCDC\FirewallBackups\firewall-after-DC02-1435-10292
 
 ## Configurable AD firewall scripts
 
-The configurable script creates scoped AD service rules using supplied client networks, supports selected optional services and cleanup, and creates firewall backups. Version 11.3 includes aligned, port-sorted TXT reports and automatically requests Administrator elevation when needed.
+The configurable script creates scoped AD service rules using supplied client networks, supports selected optional services and cleanup, and creates firewall backups. Version 11.4 groups enabled TXT report rows into separate Inbound and Outbound sections while retaining aligned, port-sorted output.
 
 PowerShell — download and run:
 
 ```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/ad-default-firewalls/ad-default-firewalls-v11.3.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.3.ps1 -ClientNetworks 192.168.5.0/24
+$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/ad-default-firewalls/ad-default-firewalls-v11.4.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.4.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.4.ps1 -ClientNetworks 192.168.5.0/24
 ```
 
 ## Quick guide
@@ -74,8 +74,8 @@ The configurable script requires `-ClientNetworks`. The barebones script detects
 
 ## Included files
 
-- `scripts/current/ad-default-firewalls/` — `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.3.ps1`.
-- `scripts/current/dc-firewalls-barebones/` — current barebones revision `dc-firewalls-barebones-v3.3.1.ps1`; earlier revisions remain in this folder.
+- `scripts/current/ad-default-firewalls/` — `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.4.ps1`.
+- `scripts/current/dc-firewalls-barebones/` — current barebones revision `dc-firewalls-barebones-v3.3.3.ps1`; earlier revisions remain in this folder.
 - `archive/older-scripts/`, `archive/previous-versions/`, and `archive/untested/` — retained reference material.
 
-The `.1` versions change the TXT report layout only. They use aligned fixed-width tables, sort rules by local port, and shorten displayed rule names; they do not intentionally change firewall behavior.
+TXT reports use aligned fixed-width tables, sort rules by local port, shorten displayed rule names, and separate enabled rules into `INBOUND RULES` and `OUTBOUND RULES` sections. These report changes do not intentionally change firewall behavior.

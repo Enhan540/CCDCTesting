@@ -244,22 +244,39 @@ function Write-FirewallReport([string]$Path, [object[]]$Rules) {
     $headerParts = @()
     for ($i = 0; $i -lt $headers.Count; $i++) { $headerParts += $headers[$i].PadRight($widths[$i]) }
     $header = $headerParts -join '  '
-    $lines = @($header, (''.PadLeft($header.Length, '-')))
-    foreach ($row in $rows) {
-        $values = @((Format-RuleName ([string]$row.DisplayName)), [string]$row.Protocol,
-            [string]$row.LocalPort, [string]$row.RemotePort,
-            [string]$row.LocalAddress, [string]$row.RemoteAddress,
-            (Format-Source $row.PolicyStoreSourceType))
-        $parts = @()
-        for ($i = 0; $i -lt $values.Count; $i++) { $parts += $values[$i].PadRight($widths[$i]) }
-        $lines += ($parts -join '  ').TrimEnd()
+    $separator = ''.PadLeft($header.Length, '-')
+    $lines = @()
+    foreach ($direction in @('Inbound','Outbound')) {
+        $sectionRows = @($rows | Where-Object { [string]$_.Direction -eq $direction })
+        $title = (" {0} RULES " -f $direction.ToUpperInvariant())
+        $title = $title.PadLeft([int](($header.Length + $title.Length) / 2)).PadRight($header.Length)
+        $lines += '',(''.PadLeft($header.Length, '=')),$title,''
+        if ($sectionRows.Count -eq 0) {
+            $lines += 'No enabled rules found.'
+            continue
+        }
+        $lines += $header,$separator
+        foreach ($row in $sectionRows) {
+            $values = @((Format-RuleName ([string]$row.DisplayName)), [string]$row.Protocol,
+                [string]$row.LocalPort, [string]$row.RemotePort,
+                [string]$row.LocalAddress, [string]$row.RemoteAddress,
+                (Format-Source $row.PolicyStoreSourceType))
+            $parts = @()
+            for ($i = 0; $i -lt $values.Count; $i++) { $parts += $values[$i].PadRight($widths[$i]) }
+            $lines += ($parts -join '  ').TrimEnd()
+        }
     }
     $lines | Set-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop
 }
 
 function Get-RuleReport {
-    foreach ($rule in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop |
-        Where-Object { [string]$_.Enabled -eq 'True' })) {
+    Write-Host 'Collecting enabled ActiveStore firewall rules for the TXT report...' -ForegroundColor Gray
+    $enabledRules = @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop |
+        Where-Object { [string]$_.Enabled -eq 'True' })
+    Write-Host ("Reading details for {0} enabled firewall rule(s)..." -f $enabledRules.Count) -ForegroundColor Gray
+    $ruleNumber = 0
+    foreach ($rule in $enabledRules) {
+        $ruleNumber++
         $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $localPort = if ([string]$port.Protocol -ieq 'ICMPv4') {
@@ -269,6 +286,7 @@ function Get-RuleReport {
         }
         [pscustomobject]@{
             DisplayName = [string]$rule.DisplayName
+            Direction = [string]$rule.Direction
             Protocol = [string]$port.Protocol
             LocalPort = $localPort
             RemotePort = @($port.RemotePort) -join ','
@@ -278,10 +296,33 @@ function Get-RuleReport {
             PolicyStoreSourceType = $rule.PolicyStoreSourceType
         }
     }
+    Write-Host ("Enabled firewall rule collection complete: {0} rule(s)." -f $ruleNumber) -ForegroundColor Gray
 }
 
 function Write-RuleReport([string]$Path, [object[]]$Rules) {
     Write-FirewallReport $Path $Rules
+}
+
+function Invoke-NetshFirewallExport([string]$Path) {
+    $netshPath = Join-Path $env:SystemRoot 'System32\netsh.exe'
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo.FileName = $netshPath
+    $process.StartInfo.Arguments = 'advfirewall export "{0}"' -f $Path
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    if (-not $process.Start()) { throw "Could not start netsh.exe for firewall export: $Path" }
+    if (-not $process.WaitForExit(60000)) {
+        try { $process.Kill() } catch { }
+        throw "netsh.exe firewall export timed out after 60 seconds: $Path"
+    }
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    if ($process.ExitCode -ne 0) {
+        $detail = (($stdout, $stderr | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' ').Trim()
+        throw "Firewall export failed with exit code $($process.ExitCode): $detail"
+    }
 }
 
 function Export-Policy([string]$Directory, [string]$BaseName, [object[]]$Rules) {
@@ -289,10 +330,12 @@ function Export-Policy([string]$Directory, [string]$BaseName, [object[]]$Rules) 
     $outputs = Get-UniqueOutputPaths $Directory $BaseName @('wfw','txt')
     $wfw = $outputs.Paths['wfw']
     $txt = $outputs.Paths['txt']
-    & netsh.exe advfirewall export $wfw | Out-Null
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $wfw) -or (Get-Item -LiteralPath $wfw).Length -le 0) {
+    Write-Host "Exporting firewall configuration to $wfw ..." -ForegroundColor Gray
+    Invoke-NetshFirewallExport $wfw
+    if (-not (Test-Path -LiteralPath $wfw) -or (Get-Item -LiteralPath $wfw).Length -le 0) {
         throw "Firewall export failed: $wfw"
     }
+    Write-Host "Writing enabled-rule TXT report to $txt ..." -ForegroundColor Gray
     Write-RuleReport $txt $Rules
     if ((Get-Item -LiteralPath $txt).Length -le 0) { throw "Rule report failed: $txt" }
     [pscustomobject]@{ Wfw = $wfw; Txt = $txt }

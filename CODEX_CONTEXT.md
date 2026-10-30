@@ -30,11 +30,11 @@ The root README contains the user-facing download and usage instructions. Curren
 
 Directory: `scripts/current/ad-default-firewalls/`
 
-Current tracked revisions include `ad-default-firewalls-v11.ps1`, `v11.1.ps1`, `v11.2.ps1`, and `v11.3.ps1`. The script creates scoped AD service rules from `-ClientNetworks`, verifies them, manages inbound cleanup according to its existing behavior, and exports firewall backups/reports. The `.1` family includes improved TXT report formatting. Do not modify these scripts unless the user specifically requests it.
+Current tracked revisions include `ad-default-firewalls-v11.ps1`, `v11.1.ps1`, `v11.2.ps1`, `v11.3.ps1`, and `v11.4.ps1`. The script creates scoped AD service rules from `-ClientNetworks`, verifies them, manages inbound cleanup according to its existing behavior, and exports firewall backups/reports. Version 11.4 formats enabled TXT reports as separate Inbound and Outbound sections. Do not modify these scripts unless the user specifically requests it.
 
 ### Barebones DC firewall
 
-Current file: `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.1.ps1`
+Current file: `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`
 
 Earlier barebones revisions still present in that directory include `v2.ps1` through `v2.4.ps1` and `v3.0.ps1`. The user generally prefers incrementing the active script by renaming it instead of keeping duplicate active copies. v3.1 was originally created while preserving v3.0 as explicitly requested; the active script was subsequently renamed for later revisions.
 
@@ -42,7 +42,7 @@ The barebones script is intended for Windows machines used in CCDC and is compat
 
 - self-elevates when needed;
 - checks the Windows Firewall cmdlets;
-- detects the primary IPv4 subnet from the default IPv4 route when `-ClientNetworks` is omitted;
+- uses the Windows Firewall `LocalSubnet4` keyword when `-ClientNetworks` is omitted;
 - accepts explicit IPv4 addresses or scopes through `-ClientNetworks`;
 - creates or updates the scoped inbound AD rules;
 - verifies rule properties and canonicalized remote scopes;
@@ -50,7 +50,7 @@ The barebones script is intended for Windows machines used in CCDC and is compat
 - preserves Group Policy or other nonlocal effective rules as warnings;
 - exports firewall `.wfw` backups and TXT reports under `C:\CCDC\FirewallBackups`.
 
-Version 3.3.1 first enables Domain, Private, and Public profiles, sets default inbound to Block and outbound to Allow, verifies those settings, and exports the initial `.wfw` and enabled-rule TXT backup. It then detects `Win32_ComputerSystem.DomainRole`: values 4 and 5 both use the DC workflow, while values 0–3 use a Client workflow. Unknown values or failed detection stop safely after the initial backup. `-Role DC` or `-Role Client` is an optional compatibility assertion; the requested role must match the detected machine type. The DC workflow uses `LocalSubnet4` by default unless `-ClientNetworks` is supplied, creates/verifies rules, cleans up local inbound rules, verifies that state, and takes a fresh final backup/report. The Client workflow makes no rule changes and takes the final export after baseline verification.
+Version 3.3.3 retains that workflow and adds section-based TXT reports: enabled Inbound rules are shown first, followed by enabled Outbound rules. Empty sections say `No enabled rules found.` The `netsh` export remains a bounded process with progress messages and a clear timeout after 60 seconds.
 
 All TXT export paths use `Get-RuleReport`, which queries ActiveStore with `-Enabled True` and explicitly filters `Enabled` to True. This includes before/after backup reports, Client reports, and `-Export`; reports include all directions and actions among enabled rules. The DC final export is freshly queried after rule creation and cleanup. `-Export` is report-only and exits without changing firewall settings or making `.wfw` backups. It cannot be combined with `-Modify`, `-Role`, or `-ClientNetworks`.
 
@@ -58,16 +58,16 @@ All TXT export paths use `Get-RuleReport`, which queries ActiveStore with `-Enab
 
 ```powershell
 # Full workflow using the LocalSubnet4 firewall scope
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
 
 # Full workflow using explicit addresses or scopes
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -ClientNetworks 192.168.5.10,192.168.5.11
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11
 
 # Modify only existing enabled local barebones rules
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
 
 # Export currently enabled effective rules only
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.1.ps1 -Export
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -Export
 ```
 
 Parameter behavior:
@@ -77,7 +77,7 @@ Parameter behavior:
 - `-Modify` skips the full setup and cleanup workflow. It requires `-ClientNetworks` and updates only currently enabled, locally managed barebones rules.
 - `-Modify` does not change unrelated rules or outbound rules.
 
-## Modify backup behavior in v3.3.1
+## Modify backup behavior in v3.3.3
 
 When `-Modify` is used, the script collects each target rule’s current remote address and completes a pre-change `.wfw` backup before modifying any rule. It attempts the requested updates, verifies each successful update, and exports an after-state backup:
 
@@ -87,7 +87,7 @@ When `-Modify` is used, the script collects each target rule’s current remote 
 
 If a rule fails, the script records the failure, stops attempting later rules, still exports the resulting after-state backup/report, and then throws an error that includes those paths. If the pre-change backup fails, no rules are modified. Versions 3.0 and 3.1 created only the after-state backup; v3.2 and later create both.
 
-## Role detection, export, and timestamp behavior in v3.3.1
+## Role detection, export, and timestamp behavior in v3.3.3
 
 `-Role` has a `ValidateSet` of `DC` and `Client` and acts as a compatibility check against the detected Windows role. DomainRole 4 and 5 both map to DC; 0–3 map to Client. Unknown or failed detection stops before firewall changes. Export-only mode is `-Export`; it cannot be combined with `-Modify`, `-Role`, or `-ClientNetworks`. The exported TXT uses the existing report formatter and queries only enabled ActiveStore rules, including all directions and actions.
 
@@ -115,7 +115,7 @@ Remote addresses are the detected subnet or the explicit `-ClientNetworks` value
 
 ## Reporting behavior
 
-The firewall TXT reports use explicit fixed-width formatting, sort by the lowest numeric local port, and retain the underlying `PolicyStoreSourceType` value internally. Human-readable source labels are applied only while writing reports. Existing report formatting changes must not alter firewall rule behavior.
+The firewall TXT reports use explicit fixed-width formatting, sort by the lowest numeric local port within each direction, and retain the underlying `PolicyStoreSourceType` value internally. Human-readable source labels are applied only while writing reports. Reports contain separate `INBOUND RULES` and `OUTBOUND RULES` sections. Existing report formatting changes must not alter firewall rule behavior.
 
 ## Important history and decisions
 

@@ -217,11 +217,20 @@ function Write-FirewallReport([string]$Path, [object[]]$Rules) {
     $header = $format -f 'Rule Name','Protocol','Local Port','Remote Port','Local Address','Remote Address'
     $headerLength = [int]$header.Length
     $separator = ''.PadLeft($headerLength, '-')
-    $title = ' FIREWALL RULES '
-    $title = $title.PadLeft([int](($headerLength + $title.Length) / 2)).PadRight($headerLength)
-    $lines = @('',(''.PadLeft($headerLength, '=')),$title,'',$header,$separator)
-    foreach ($row in $rows) {
-        $lines += ($format -f (Format-RuleName $row.Name),$row.Protocol,$row.LocalPort,$row.RemotePort,$row.LocalAddress,$row.RemoteAddress)
+    $lines = @()
+    foreach ($direction in @('Inbound','Outbound')) {
+        $sectionRows = @($rows | Where-Object { [string]$_.Direction -eq $direction })
+        $title = (" {0} RULES " -f $direction.ToUpperInvariant())
+        $title = $title.PadLeft([int](($headerLength + $title.Length) / 2)).PadRight($headerLength)
+        $lines += '',(''.PadLeft($headerLength, '=')),$title,''
+        if ($sectionRows.Count -eq 0) {
+            $lines += 'No enabled rules found.'
+            continue
+        }
+        $lines += $header,$separator
+        foreach ($row in $sectionRows) {
+            $lines += ($format -f (Format-RuleName $row.Name),$row.Protocol,$row.LocalPort,$row.RemotePort,$row.LocalAddress,$row.RemoteAddress)
+        }
     }
     $lines | Set-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop
 }
@@ -237,6 +246,7 @@ function Get-EnabledRuleSummary {
         }
         [pscustomobject]@{
             Name = [string]$rule.Name
+            Direction = [string]$rule.Direction
             Protocol = [string]$port.Protocol
             LocalPort = $localPort
             RemotePort = @($port.RemotePort) -join ','
