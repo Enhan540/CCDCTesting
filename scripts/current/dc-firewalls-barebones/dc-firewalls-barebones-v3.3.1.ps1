@@ -4,9 +4,9 @@
   Barebones scoped firewall policy for a CCDC Active Directory domain controller.
 
 .DESCRIPTION
-  With no parameters, detects the primary IPv4 subnet, creates the barebones
-  AD rules, verifies them, and disables other enabled local inbound rules.
-  -ClientNetworks optionally replaces the detected subnet with explicit IPv4
+  With no parameters, uses the LocalSubnet4 firewall keyword, creates the
+  barebones AD rules, verifies them, and disables other enabled local inbound
+  rules. -ClientNetworks optionally replaces LocalSubnet4 with explicit IPv4
   addresses or scopes. -Modify updates only enabled local barebones rules and
   requires an explicit -ClientNetworks value.
 #>
@@ -45,7 +45,7 @@ $dryRun = $false
 $backupDirectory = 'C:\CCDC\FirewallBackups'
 $beforeBackup = $null
 
-function Write-Step([int]$Number, [string]$Text, [int]$Total = 9) {
+function Write-Step([int]$Number, [string]$Text, [int]$Total = 5) {
     Write-Host ("`n[{0}/{1}] {2}" -f $Number, $Total, $Text) -ForegroundColor Cyan
 }
 
@@ -70,6 +70,28 @@ function Get-DetectedMachineRole {
 function Assert-RequestedRole([string]$DetectedWorkflowRole, [string]$RequestedRole) {
     if ($RequestedRole -and $RequestedRole -ne $DetectedWorkflowRole) {
         throw "Requested -Role $RequestedRole is incompatible with this machine, detected as $DetectedWorkflowRole."
+    }
+}
+
+function Set-AndVerifyFirewallBaseline {
+    Set-NetFirewallProfile -Name Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow -Confirm:$false -ErrorAction Stop
+    $profiles = @(Get-NetFirewallProfile -Name Domain,Private,Public -ErrorAction Stop)
+    if ($profiles.Count -ne 3) { throw "Expected three firewall profiles, found $($profiles.Count)." }
+    foreach ($profile in $profiles) {
+        if ([string]$profile.Enabled -ne 'True') { throw "Firewall profile $($profile.Name) is not enabled." }
+        if ([string]$profile.DefaultInboundAction -ne 'Block') { throw "Firewall profile $($profile.Name) default inbound action is not Block." }
+        if ([string]$profile.DefaultOutboundAction -ne 'Allow') { throw "Firewall profile $($profile.Name) default outbound action is not Allow." }
+    }
+}
+
+function Assert-DCInboundState($Specs) {
+    foreach ($spec in $Specs) { Assert-CreatedRule $spec }
+    $created = @($Specs | ForEach-Object { $_.Name })
+    $remainingLocal = @(Get-NetFirewallRule -PolicyStore PersistentStore -Direction Inbound -Enabled True -ErrorAction Stop |
+        Where-Object { $created -notcontains $_.Name })
+    if ($remainingLocal.Count -gt 0) {
+        $names = ($remainingLocal | ForEach-Object { $_.Name }) -join ', '
+        throw "Verification failed: enabled local inbound rules remain outside the script-created rules: $names"
     }
 }
 
@@ -136,7 +158,7 @@ function ConvertTo-NetworkCidr([string]$Address, [int]$PrefixLength) {
 
 function ConvertTo-CanonicalScope([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
-    if ($Value -eq 'Any') { return 'Any' }
+    if ($Value -match '^(?i:Any|LocalSubnet4|LocalSubnet6|LocalSubnet)$') { return $Value }
     $parts = $Value.Split('/')
     $bytes = ConvertTo-IPv4Bytes $parts[0]
     if ($parts.Count -eq 1) { return ("{0}.{1}.{2}.{3}" -f $bytes[0],$bytes[1],$bytes[2],$bytes[3]) }
@@ -147,20 +169,6 @@ function ConvertTo-CanonicalScope([string]$Value) {
 
 function Get-CanonicalSet([object]$Values) {
     return @($Values | ForEach-Object { ConvertTo-CanonicalScope ([string]$_) } | Sort-Object -Unique)
-}
-
-function Resolve-Subnet {
-    $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
-        Sort-Object RouteMetric, InterfaceMetric)
-    if ($routes.Count -eq 0) { throw 'No active IPv4 default route was found.' }
-    $bestMetric = "{0}:{1}" -f $routes[0].RouteMetric, $routes[0].InterfaceMetric
-    $best = @($routes | Where-Object { ("{0}:{1}" -f $_.RouteMetric,$_.InterfaceMetric) -eq $bestMetric })
-    $interfaces = @($best | Select-Object -ExpandProperty InterfaceIndex -Unique)
-    if ($interfaces.Count -ne 1) { throw 'Primary IPv4 adapter is ambiguous; cannot continue safely.' }
-    $config = Get-NetIPConfiguration -InterfaceIndex $interfaces[0] -ErrorAction Stop
-    $ipv4 = @($config.IPv4Address)
-    if ($ipv4.Count -ne 1) { throw 'Primary adapter does not have exactly one IPv4 address.' }
-    return ConvertTo-NetworkCidr $ipv4[0].IPv4Address ([int]$ipv4[0].PrefixLength)
 }
 
 function Assert-IPv4Scopes([string[]]$Values, [string]$Label) {
@@ -250,7 +258,8 @@ function Write-FirewallReport([string]$Path, [object[]]$Rules) {
 }
 
 function Get-RuleReport {
-    foreach ($rule in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop)) {
+    foreach ($rule in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop |
+        Where-Object { [string]$_.Enabled -eq 'True' })) {
         $port = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $address = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $localPort = if ([string]$port.Protocol -ieq 'ICMPv4') {
@@ -404,7 +413,7 @@ function Update-EnabledBarebonesRules([string[]]$RemoteScope) {
 }
 
 try {
-    Write-Step 1 'Check administrator privileges and firewall cmdlets'
+    Write-Host "`nChecking administrator privileges and firewall cmdlets..." -ForegroundColor Cyan
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run as Administrator.' }
@@ -413,7 +422,7 @@ try {
         foreach ($command in @('Get-NetFirewallRule','Get-NetFirewallPortFilter','Get-NetFirewallAddressFilter')) {
             if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required firewall cmdlet is unavailable: $command" }
         }
-        Write-Step 1 'Export enabled effective firewall rules'
+        Write-Host "`nExport enabled effective firewall rules" -ForegroundColor Cyan
         Export-EnabledRuleReport 'firewall-export'
         return
     }
@@ -422,34 +431,12 @@ try {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required firewall cmdlet is unavailable: $command" }
     }
 
-    $machineRole = Get-DetectedMachineRole
-    Assert-RequestedRole $machineRole.WorkflowRole $Role
-    Write-Host ("Detected machine: {0} (DomainRole {1}); workflow: {2}" -f $machineRole.DetectedRole,$machineRole.DomainRole,$machineRole.WorkflowRole) -ForegroundColor Gray
-
     $providedNetworks = @($ClientNetworks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     if ($providedNetworks.Count -gt 0) { Assert-IPv4Scopes $providedNetworks 'ClientNetworks' }
-
-    if ($machineRole.WorkflowRole -eq 'Client') {
-        if ($Modify) { throw '-Modify is only available on a detected Domain Controller.' }
-        Write-Step 2 'Back up original firewall configuration'
-        $clientBeforeRules = @(Get-RuleReport)
-        $beforeBackup = Export-Policy $backupDirectory 'firewall-before' $clientBeforeRules
-        Write-Host "Before backup: $($beforeBackup.Wfw)" -ForegroundColor Green
-
-        Write-Step 3 'Enable Domain, Private, and Public firewall profiles'
-        Set-NetFirewallProfile -Name Domain,Private,Public -Enabled True -Confirm:$false -ErrorAction Stop
-
-        Write-Step 4 'Export currently enabled effective firewall rules'
-        $clientEnabledRules = @(Get-RuleReport)
-        Export-EnabledRuleReport 'firewall-client'
-        Write-Host ("Enabled rules reported: {0}" -f $clientEnabledRules.Count) -ForegroundColor Gray
-        if ($providedNetworks.Count -gt 0) { Write-Host 'ClientNetworks is not used by the preliminary Client workflow.' -ForegroundColor Gray }
-        # TODO: Add client-specific baseline rules, secure inbound/outbound policies, and service-aware firewall configuration in a future version.
-        Write-Host 'Client workflow completed. No baseline rules were created and no firewall rules were disabled.' -ForegroundColor Green
-        return
-    }
-
     if ($Modify) {
+        $machineRole = Get-DetectedMachineRole
+        Assert-RequestedRole $machineRole.WorkflowRole $Role
+        if ($machineRole.WorkflowRole -ne 'DC') { throw '-Modify is only available on a detected Domain Controller.' }
         if ($providedNetworks.Count -eq 0) { throw '-Modify requires -ClientNetworks with one or more IPv4 addresses or scopes.' }
         $remoteScope = ConvertTo-FirewallIPv4Scope $providedNetworks
         Write-Step 1 'Modify enabled local DC barebones rule scopes'
@@ -458,32 +445,45 @@ try {
         return
     }
 
-    Write-Step 2 'Back up original firewall configuration'
+    Write-Step 1 'Enable profiles, set default actions, and verify firewall baseline'
+    Set-AndVerifyFirewallBaseline
+    Write-Host 'Profiles enabled; default inbound is Block and default outbound is Allow.' -ForegroundColor Green
+
+    Write-Step 2 'Export baseline firewall configuration and enabled rules'
     $beforeRules = @(Get-RuleReport)
     $beforeBackup = Export-Policy $backupDirectory 'firewall-before' $beforeRules
     Write-Host "Before backup: $($beforeBackup.Wfw)" -ForegroundColor Green
     Write-Host "Before report: $($beforeBackup.Txt)" -ForegroundColor Green
 
-    Write-Step 3 'Enable Domain, Private, and Public firewall profiles'
-    Set-NetFirewallProfile -Name Domain,Private,Public -Enabled True -Confirm:$false -ErrorAction Stop
+    Write-Step 3 'Detect Domain Controller or non-DC workflow'
+    $machineRole = Get-DetectedMachineRole
+    Assert-RequestedRole $machineRole.WorkflowRole $Role
+    Write-Host ("Detected machine: {0} (DomainRole {1}); workflow: {2}" -f $machineRole.DetectedRole,$machineRole.DomainRole,$machineRole.WorkflowRole) -ForegroundColor Gray
 
-    Write-Step 4 'Export currently enabled effective firewall rules'
-    $beforeRules = @(Get-RuleReport)
-    Write-RuleReport $beforeBackup.Txt $beforeRules
+    if ($machineRole.WorkflowRole -eq 'Client') {
+        if ($providedNetworks.Count -gt 0) { Write-Host 'ClientNetworks is not used by the preliminary Client workflow.' -ForegroundColor Gray }
+        # TODO: Add client-specific baseline rules, secure inbound/outbound policies, and service-aware firewall configuration in a future version.
+        Write-Host 'Client workflow completed. No baseline rules were created and no firewall rules were disabled.' -ForegroundColor Green
+        Write-Step 4 'Verify client workflow'
+        Set-AndVerifyFirewallBaseline
+        Write-Step 5 'Export final firewall configuration and report'
+        $afterRules = @(Get-RuleReport)
+        $afterBackup = Export-Policy $backupDirectory 'firewall-after' $afterRules
+        Write-Host "After backup: $($afterBackup.Wfw)" -ForegroundColor Green
+        Write-Host "After report: $($afterBackup.Txt)" -ForegroundColor Green
+        return
+    }
 
-    Write-Step 5 'Detect primary IPv4 subnet or use ClientNetworks'
+    Write-Step 3 'Perform Domain Controller rule creation and cleanup'
     if ($providedNetworks.Count -gt 0) {
         $remoteScope = ConvertTo-FirewallIPv4Scope $providedNetworks
-        $subnetValue = $null
+        Write-Host ("Using ClientNetworks: {0}" -f ($remoteScope -join ', ')) -ForegroundColor Green
     } else {
-        $subnetValue = Resolve-Subnet
-        $remoteScope = @($subnetValue)
+        $remoteScope = @('LocalSubnet4')
+        Write-Host 'Using Windows Firewall keyword: LocalSubnet4' -ForegroundColor Green
     }
     Write-Host ("Remote scope: {0}" -f ($remoteScope -join ', ')) -ForegroundColor Gray
     Write-Host ("Enabled rules found: {0}" -f $beforeRules.Count) -ForegroundColor Gray
-
-    if ($subnetValue) { Write-Host "Using subnet: $subnetValue" -ForegroundColor Green }
-    else { Write-Host ("Using ClientNetworks: {0}" -f ($remoteScope -join ', ')) -ForegroundColor Green }
 
     $specs = @(
         (New-ADSpec 'TCP-53' 'TCP' '53' $remoteScope); (New-ADSpec 'UDP-53' 'UDP' '53' $remoteScope)
@@ -495,7 +495,6 @@ try {
         (New-ADSpec 'TCP-3268' 'TCP' '3268' $remoteScope)
     )
 
-    Write-Step 6 'Create inbound AD allow rules'
     $localRules = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop)
     foreach ($spec in $specs) {
         $managed = @($localRules | Where-Object {
@@ -530,11 +529,9 @@ try {
         Write-Host "Created $($spec.Name)" -ForegroundColor Green
     }
 
-    Write-Step 7 'Verify every created rule'
     foreach ($spec in $specs) { Assert-CreatedRule $spec }
     Write-Host 'All created rules verified.' -ForegroundColor Green
 
-    Write-Step 8 'Disable other local inbound rules'
     Write-Warning 'Disabling other enabled local inbound rules can interrupt AD replication, remote management, and CCDC scoring.'
     $created = @($specs | ForEach-Object { $_.Name })
     $targets = @(Get-NetFirewallRule -PolicyStore PersistentStore -Direction Inbound -Enabled True -ErrorAction Stop |
@@ -551,7 +548,12 @@ try {
         $effectiveNonLocal | ForEach-Object { Write-Warning ("Remaining effective rule: {0}" -f $_.Name) }
     }
 
-    Write-Step 9 'Export final firewall configuration and report'
+    Write-Step 4 'Verify completed Domain Controller firewall state'
+    Assert-DCInboundState $specs
+    Write-Host 'All created rules are enabled and no other enabled local inbound rules remain.' -ForegroundColor Green
+
+    # Query the effective policy after rule creation and cleanup so both final files represent the new state.
+    Write-Step 5 'Export final firewall configuration and report'
     $afterRules = @(Get-RuleReport)
     $afterBackup = Export-Policy $backupDirectory 'firewall-after' $afterRules
     Write-Host "After backup: $($afterBackup.Wfw)" -ForegroundColor Green
