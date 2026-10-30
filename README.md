@@ -1,81 +1,114 @@
-# CCDC Scripts
+# CCDC Windows Firewall Scripts
 
-This repository publishes Windows PowerShell scripts to use and test on Windows machines during CCDC competitions. It includes current firewall scripts plus older, previous, and untested versions kept for reference.
+This repository contains Windows PowerShell firewall scripts for CCDC competition systems. The newest general-purpose script is in the repository root. The current barebones script and reusable service module remain under `scripts/current/`. Older AD-firewall variants and historical scripts are retained under `archive/`.
+
+## Newest script: `win-firewall-v1.0.ps1`
+
+Run this script from an elevated Windows PowerShell session, or let it request elevation when needed. It detects whether the host is a Client or Domain Controller, enables all firewall profiles, sets default inbound traffic to Block and outbound traffic to Allow, creates the appropriate script-managed rules, disables other enabled local inbound rules, and exports before/after firewall backups and reports.
+
+The script preserves rules it creates. On a Domain Controller those include the AD rules; with `-ConfigureServices`, they also include selected service-listener rules. On a Client, selected service rules are the only rules created by the script.
+
+### Basic run
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1
+```
+
+Optional role validation:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -Role DC
+```
+
+### Client network scopes
+
+On a Domain Controller, omit `-ClientNetworks` to use `LocalSubnet4`, or provide explicit IPv4 addresses/CIDR scopes:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ClientNetworks 192.168.5.0/24
+```
+
+### Optional service rules
+
+Use `-ConfigureServices` to discover running Windows services with TCP/UDP listeners. The script displays a numbered list and accepts individual numbers, comma-separated numbers, ranges, `All`, or `None`.
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ConfigureServices
+```
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ConfigureServices -ServiceSelection 2,4-6
+```
+
+Service rules default to `Any` remote address. Restrict them explicitly when appropriate:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ConfigureServices -ServiceSelection 2-4 -ServiceRemoteAddress 192.168.5.0/24
+```
+
+The service module is at `scripts/current/service-firewall/ServiceFirewallRules.psm1`.
+
+### Detailed append-only logs
+
+Use `-KeepLogs` to append detailed firewall activity to the stable default file:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -KeepLogs
+```
+
+Default log path:
+
+```text
+C:\CCDC\FirewallBackups\firewall.log
+```
+
+Use a custom path when several systems or workflows should share a log:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ConfigureServices -KeepLogs C:\CCDC\FirewallBackups\competition-firewall.log
+```
+
+Runs using the same path append to the existing file. Console output remains concise; the log records rule-level creation, update, disable, verification, export, error, and rollback details.
+
+### Modify and export modes
+
+Update the remote scopes on existing enabled AD rules without running the full baseline or cleanup workflow:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -Modify -ClientNetworks 192.168.5.10,192.168.5.11
+```
+
+Export a report of currently enabled effective rules without changing firewall settings:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -Export
+```
+
+Restore a `.wfw` backup with `netsh`:
+
+```powershell
+netsh advfirewall import 'C:\CCDC\FirewallBackups\firewall-after-CLIENT01-0916-10302026.wfw'
+```
+
+Keep console or out-of-band access available. Firewall cleanup can interrupt remote management, application traffic, or CCDC services. Group Policy-controlled rules may remain enabled and are reported as nonlocal rules.
+
+## Current barebones script
+
+The most current legacy barebones workflow is `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`. It provides the earlier AD-focused workflow with automatic Client/DC detection, `LocalSubnet4` support, `-Modify`, `-Export`, before/after backups, and enabled-rule reports.
+
+For its full parameters, behavior, and examples, see [scripts/current/dc-firewalls-barebones/README.md](scripts/current/dc-firewalls-barebones/README.md).
+
+Quick run:
+
+```powershell
+PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
+```
 
 ## Repository layout
 
-- `scripts/current/ad-default-firewalls/` — current configurable AD firewall revisions.
-- `scripts/current/dc-firewalls-barebones/` — current automatic-subnet barebones revisions.
-- `archive/older-scripts/` — earlier general CCDC scripts.
-- `archive/previous-versions/` — previous AD firewall versions.
+- `win-firewall-v1.0.ps1` — newest general-purpose Client/DC firewall script.
+- `scripts/current/dc-firewalls-barebones/` — current barebones script and detailed documentation.
+- `scripts/current/service-firewall/` — reusable service-to-firewall rule module.
+- `archive/previous-versions/ad-default-firewalls/` — archived configurable AD-firewall variants and their documentation.
+- `archive/older-scripts/` — older general CCDC scripts.
 - `archive/untested/` — scripts not yet validated for regular use.
-
-## Barebones scripts
-
-The barebones script detects whether the machine is a Domain Controller or Client. Version 3.3.3 enables all firewall profiles, sets default inbound to Block and outbound to Allow, verifies those settings, then runs the appropriate workflow. All TXT firewall reports include only rules whose Enabled state is True. Export stages show progress and stop with an error if `netsh` does not finish within 60 seconds. Reports separate enabled rules into Inbound and Outbound sections.
-
-### Barebones parameters
-
-- No parameters: set and verify the firewall baseline, then detect the Windows role. DCs run the full setup using `LocalSubnet4`; other roles use the Client workflow.
-- `-ClientNetworks`: optionally supply one or more IPv4 addresses or scopes, comma-separated. In a full DC run, these replace the default `LocalSubnet4` scope.
-- `-Modify`: update only the remote-address scope on existing enabled local barebones rules. Must be used with `-ClientNetworks` on a detected DC; it skips the full setup and cleanup workflow and saves before and after `.wfw` backups, plus a `.txt` before-to-after report in `C:\CCDC\FirewallBackups\`.
-- `-Role DC` or `-Role Client`: optionally state the expected workflow. The script checks it against the detected machine type and stops if they do not match. When omitted, the role is detected automatically.
-- `-Export`: write a timestamped TXT report of all enabled effective firewall rules and exit without changing firewall settings. It cannot be combined with `-Modify`, `-Role`, or `-ClientNetworks`.
-
-DomainRole values 4 and 5 use the same DC workflow. The script first enables Domain, Private, and Public profiles, sets default inbound to Block and outbound to Allow, verifies those settings, and creates the initial `.wfw` and enabled-rule TXT backup. It then detects the role, creates and verifies the AD rules on a DC, disables other enabled local inbound rules, verifies the resulting state, and takes a fresh final `.wfw` and enabled-rule TXT export. With no `-ClientNetworks`, the AD rules use `LocalSubnet4`; explicit `-ClientNetworks` values remain available for other subnets. Values 0–3 use the Client workflow: verify the baseline, make no rule changes, then take the final export.
-
-Backup and report filenames include the computer name and `HHmm-MMddyyyy` timestamp. If a name already exists from another run during the same minute, a numeric suffix is added.
-
-PowerShell — download and run:
-
-```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1'; Invoke-WebRequest $u -OutFile .\dc-firewalls-barebones-v3.3.3.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
-```
-
-Full setup with explicit addresses instead of the detected subnet:
-
-```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11
-```
-
-Modify existing enabled barebones rules and save before/after backups:
-
-```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -ClientNetworks 192.168.5.10,192.168.5.11 -Modify
-```
-
-Export only, without changing firewall settings:
-
-```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1 -Export
-```
-
-### Restoring Firewall from Backup
-To restore firewall settings, use a `.wfw` file from `C:\CCDC\FirewallBackups\`. A full DC run and `-Modify` each create before and after backups; the Client workflow creates an original backup. For example:
-```powershell
-netsh advfirewall import 'C:\CCDC\FirewallBackups\firewall-after-DC02-1435-10292026.wfw'
-```
-
-## Configurable AD firewall scripts
-
-The configurable script creates scoped AD service rules using supplied client networks, supports selected optional services and cleanup, and creates firewall backups. Version 11.4 groups enabled TXT report rows into separate Inbound and Outbound sections while retaining aligned, port-sorted output.
-
-PowerShell — download and run:
-
-```powershell
-$u='https://raw.githubusercontent.com/Enhan540/CCDCTesting/main/scripts/current/ad-default-firewalls/ad-default-firewalls-v11.4.ps1'; Invoke-WebRequest $u -OutFile .\ad-default-firewalls-v11.4.ps1; PowerShell.exe -ExecutionPolicy Bypass -File .\ad-default-firewalls-v11.4.ps1 -ClientNetworks 192.168.5.0/24
-```
-
-## Quick guide
-
-Run the commands in Windows PowerShell. The scripts request elevation when needed. Keep console or out-of-band access; the DC workflow disables other local inbound rules only after all baseline rules pass verification.
-
-The configurable script requires `-ClientNetworks`. The barebones script detects the machine role automatically. Use `-Export` for a report-only run, `-ClientNetworks` to provide remote scopes, or `-Modify` to update existing enabled barebones rules on a DC.
-
-## Included files
-
-- `scripts/current/ad-default-firewalls/` — `ad-default-firewalls-v11.ps1` through `ad-default-firewalls-v11.4.ps1`.
-- `scripts/current/dc-firewalls-barebones/` — current barebones revision `dc-firewalls-barebones-v3.3.3.ps1`; earlier revisions remain in this folder.
-- `archive/older-scripts/`, `archive/previous-versions/`, and `archive/untested/` — retained reference material.
-
-TXT reports use aligned fixed-width tables, sort rules by local port, shorten displayed rule names, and separate enabled rules into `INBOUND RULES` and `OUTBOUND RULES` sections. These report changes do not intentionally change firewall behavior.

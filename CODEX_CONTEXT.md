@@ -26,15 +26,23 @@ The root README contains the user-facing download and usage instructions. Curren
 
 ## Current scripts
 
-### Configurable AD firewall
+### Newest Windows firewall
 
-Directory: `scripts/current/ad-default-firewalls/`
+File: `win-firewall-v1.0.ps1`
+
+The repository-root script is now the newest general-purpose firewall workflow. It supports Client and Domain Controller runs, optional service-listener configuration, inbound cleanup, and append-only `-KeepLogs` logging. The reusable service module remains at `scripts/current/service-firewall/ServiceFirewallRules.psm1`.
+
+### Archived configurable AD firewall
+
+Directory: `archive/previous-versions/ad-default-firewalls/`
 
 Current tracked revisions include `ad-default-firewalls-v11.ps1`, `v11.1.ps1`, `v11.2.ps1`, `v11.3.ps1`, and `v11.4.ps1`. The script creates scoped AD service rules from `-ClientNetworks`, verifies them, manages inbound cleanup according to its existing behavior, and exports firewall backups/reports. Version 11.4 formats enabled TXT reports as separate Inbound and Outbound sections. Do not modify these scripts unless the user specifically requests it.
 
 ### Barebones DC firewall
 
 Current file: `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`
+
+Detailed usage is documented in `scripts/current/dc-firewalls-barebones/README.md`. It remains the current barebones revision, while `win-firewall-v1.0.ps1` is the recommended newest script.
 
 Earlier barebones revisions still present in that directory include `v2.ps1` through `v2.4.ps1` and `v3.0.ps1`. The user generally prefers incrementing the active script by renaming it instead of keeping duplicate active copies. v3.1 was originally created while preserving v3.0 as explicitly requested; the active script was subsequently renamed for later revisions.
 
