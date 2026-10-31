@@ -28,7 +28,7 @@ The root README contains the user-facing download and usage instructions. Curren
 
 ### Newest Windows firewall
 
-File: `win-firewall-v1.0.ps1`
+File: `win-firewall-v1.0.1.ps1`
 
 The repository-root script is now the newest general-purpose firewall workflow. It supports Client and Domain Controller runs, optional service-listener configuration, inbound cleanup, and append-only `-KeepLogs` logging. The reusable service module remains at `scripts/current/service-firewall/ServiceFirewallRules.psm1`.
 
@@ -42,7 +42,7 @@ Current tracked revisions include `ad-default-firewalls-v11.ps1`, `v11.1.ps1`, `
 
 Current file: `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`
 
-Detailed usage is documented in `scripts/current/dc-firewalls-barebones/README.md`. It remains the current barebones revision, while `win-firewall-v1.0.ps1` is the recommended newest script.
+Detailed usage is documented in `scripts/current/dc-firewalls-barebones/README.md`. It remains the current barebones revision, while `win-firewall-v1.0.1.ps1` is the recommended newest script.
 
 Earlier barebones revisions still present in that directory include `v2.ps1` through `v2.4.ps1` and `v3.0.ps1`. The user generally prefers incrementing the active script by renaming it instead of keeping duplicate active copies. v3.1 was originally created while preserving v3.0 as explicitly requested; the active script was subsequently renamed for later revisions.
 

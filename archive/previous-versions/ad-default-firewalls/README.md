@@ -1,6 +1,6 @@
 # Archived Configurable AD Firewall Scripts
 
-This folder contains the previous configurable AD-firewall variants. They are retained for reference and are not the recommended entry point for new runs. The newest general-purpose script is [win-firewall-v1.0.ps1](../../../win-firewall-v1.0.ps1).
+This folder contains the previous configurable AD-firewall variants. They are retained for reference and are not the recommended entry point for new runs. The newest general-purpose script is [win-firewall-v1.0.1.ps1](../../../win-firewall-v1.0.1.ps1).
 
 ## Archived variants
 

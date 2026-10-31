@@ -66,7 +66,7 @@ function Start-RunLog {
     Add-Content -LiteralPath $script:logPath -Value @('', '===== RUN START =====',
         ("Time={0}" -f (Get-Date -Format 'o')),
         ("Computer={0}" -f $env:COMPUTERNAME),
-        'ScriptVersion=1.0',
+        'ScriptVersion=1.0.1',
         ("Arguments={0}" -f $script:runArguments),
         ("LogPath={0}" -f $script:logPath)) -Encoding UTF8 -ErrorAction Stop
     Write-Host "Detailed firewall logging enabled: $script:logPath" -ForegroundColor Gray
