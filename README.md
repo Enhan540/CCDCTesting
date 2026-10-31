@@ -2,24 +2,24 @@
 
 This repository contains Windows PowerShell firewall scripts for CCDC competition systems. The newest general-purpose script is in the repository root. The current barebones script and reusable service module remain under `scripts/current/`. Older AD-firewall variants and historical scripts are retained under `archive/`.
 
-## Newest script: `win-firewall-v1.0.1.ps1`
+## Newest script: `win-firewall-v1.0.4.ps1`
 
 Run this script from an elevated Windows PowerShell session, or let it request elevation when needed. It detects whether the host is a Client or Domain Controller, enables all firewall profiles, sets default inbound traffic to Block and outbound traffic to Allow, creates the appropriate script-managed rules, disables other enabled local inbound rules, and exports before/after firewall backups and reports.
 
-Version `1.0.1` is the first patch increment from `1.0`, released to correct role-parameter handling and service-module packaging issues.
+Version `1.0.4` groups service listeners by service/protocol/port, preserves exact local addresses, filters UDP dynamic RPC noise, and prevents selection loops. Version `1.0.3` fixed blank service-selection loops and displays each AD rule created or updated during a DC run. Version `1.0.2` fixed the logging parameter and supports both bare `-Log` and `-Log <path>` forms. Version `1.0.1` corrected role-parameter handling and service-module packaging issues.
 
 The script preserves rules it creates. On a Domain Controller those include the AD rules; with `-ConfigureServices`, they also include selected service-listener rules. On a Client, selected service rules are the only rules created by the script.
 
 ### Basic run
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1
 ```
 
 Optional role validation:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -Role DC
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Role DC
 ```
 
 ### Client network scopes
@@ -27,7 +27,7 @@ PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -Role DC
 On a Domain Controller, omit `-ClientNetworks` to use `LocalSubnet4`, or provide explicit IPv4 addresses/CIDR scopes:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ClientNetworks 192.168.5.0/24
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ClientNetworks 192.168.5.0/24
 ```
 
 ### Optional service rules
@@ -35,27 +35,27 @@ PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ClientNe
 Use `-ConfigureServices` to discover running Windows services with TCP/UDP listeners. The script displays a numbered list and accepts individual numbers, comma-separated numbers, ranges, `All`, or `None`.
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ConfigureServices
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices
 ```
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ConfigureServices -ServiceSelection 2,4-6
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -ServiceSelection 2,4-6
 ```
 
 Service rules default to `Any` remote address. Restrict them explicitly when appropriate:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ConfigureServices -ServiceSelection 2-4 -ServiceRemoteAddress 192.168.5.0/24
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -ServiceSelection 2-4 -ServiceRemoteAddress 192.168.5.0/24
 ```
 
-The service-selection logic is packaged inside `win-firewall-v1.0.1.ps1`, so copying only that file is sufficient. The separate module at `scripts/current/service-firewall/ServiceFirewallRules.psm1` remains available when the service-selection functionality is needed from another script.
+The service-selection logic is packaged inside `win-firewall-v1.0.4.ps1`, so copying only that file is sufficient. The separate module at `scripts/current/service-firewall/ServiceFirewallRules.psm1` remains available when the service-selection functionality is needed from another script.
 
 ### Detailed append-only logs
 
-Use `-KeepLogs` to append detailed firewall activity to the stable default file:
+Use `-Log` to append detailed firewall activity to the stable default file:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -KeepLogs
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Log
 ```
 
 Default log path:
@@ -64,10 +64,10 @@ Default log path:
 C:\CCDC\FirewallBackups\firewall.log
 ```
 
-Use a custom path when several systems or workflows should share a log:
+Use an optional custom path when several systems or workflows should share a log:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -ConfigureServices -KeepLogs C:\CCDC\FirewallBackups\competition-firewall.log
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -Log C:\CCDC\FirewallBackups\competition-firewall.log
 ```
 
 Runs using the same path append to the existing file. Console output remains concise; the log records rule-level creation, update, disable, verification, export, error, and rollback details.
@@ -77,13 +77,13 @@ Runs using the same path append to the existing file. Console output remains con
 Update the remote scopes on existing enabled AD rules without running the full baseline or cleanup workflow:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -Modify -ClientNetworks 192.168.5.10,192.168.5.11
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Modify -ClientNetworks 192.168.5.10,192.168.5.11
 ```
 
 Export a report of currently enabled effective rules without changing firewall settings:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.1.ps1 -Export
+PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Export
 ```
 
 Restore a `.wfw` backup with `netsh`:
@@ -108,7 +108,7 @@ PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
 
 ## Repository layout
 
-- `win-firewall-v1.0.1.ps1` — newest general-purpose Client/DC firewall script; `v1.0` is the previous revision.
+- `win-firewall-v1.0.4.ps1` — newest general-purpose Client/DC firewall script; `v1.0.3` is the previous revision.
 - `scripts/current/dc-firewalls-barebones/` — current barebones script and detailed documentation.
 - `scripts/current/service-firewall/` — reusable service-to-firewall rule module.
 - `archive/previous-versions/ad-default-firewalls/` — archived configurable AD-firewall variants and their documentation.

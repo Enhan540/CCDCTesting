@@ -7,7 +7,7 @@
   Applies a blocking inbound baseline, creates the required AD rules on a
   Domain Controller, optionally creates rules for selected service listeners,
   disables other enabled local inbound rules, and exports before/after state.
-  -KeepLogs enables append-only detailed firewall logging. It can be used by
+  -Log enables append-only detailed firewall logging. It can be used by
   itself or followed by a log path.
 #>
 [CmdletBinding()]
@@ -18,8 +18,10 @@ param(
     [switch]$ConfigureServices,
     [string]$ServiceSelection,
     [string[]]$ServiceRemoteAddress = @('Any'),
-    [object]$KeepLogs,
-    [switch]$Export
+    [switch]$Log,
+    [switch]$Export,
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$RemainingArguments
 )
 
 if ($Export -and ($Modify -or $ConfigureServices -or $PSBoundParameters.ContainsKey('Role') -or
@@ -42,12 +44,15 @@ $logPath = $null
 $runArguments = ($PSBoundParameters.Keys -join ',')
 
 function Resolve-LogPath {
-    param([object]$Value)
-    if ($null -eq $Value -or [string]$Value -eq 'False') { return $null }
-    if ($Value -is [bool] -or [string]$Value -eq 'True') { return (Join-Path $backupDirectory 'firewall.log') }
-    $text = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) { return (Join-Path $backupDirectory 'firewall.log') }
-    return $text
+    param([switch]$Enabled, [string[]]$Arguments)
+    if (-not $Enabled) { return $null }
+    if (@($Arguments).Count -gt 1) { throw '-Log accepts at most one optional path.' }
+    if (@($Arguments).Count -eq 1) {
+        $text = ([string]$Arguments[0]).Trim()
+        if ($text.StartsWith('-')) { throw "Invalid -Log path: $text" }
+        if (-not [string]::IsNullOrWhiteSpace($text)) { return $text }
+    }
+    return (Join-Path $backupDirectory 'firewall.log')
 }
 
 function Write-Log {
@@ -59,14 +64,14 @@ function Write-Log {
 }
 
 function Start-RunLog {
-    $script:logPath = Resolve-LogPath $KeepLogs
+    $script:logPath = Resolve-LogPath -Enabled:$Log -Arguments $RemainingArguments
     if (-not $script:logPath) { return }
     $parent = Split-Path -Parent $script:logPath
     if ($parent) { New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null }
     Add-Content -LiteralPath $script:logPath -Value @('', '===== RUN START =====',
         ("Time={0}" -f (Get-Date -Format 'o')),
         ("Computer={0}" -f $env:COMPUTERNAME),
-        'ScriptVersion=1.0.1',
+        'ScriptVersion=1.0.3',
         ("Arguments={0}" -f $script:runArguments),
         ("LogPath={0}" -f $script:logPath)) -Encoding UTF8 -ErrorAction Stop
     Write-Host "Detailed firewall logging enabled: $script:logPath" -ForegroundColor Gray
@@ -163,7 +168,9 @@ function Invoke-ADRules([string[]]$Remote) {
         $rule = @(Get-NetFirewallRule -PolicyStore PersistentStore -Name $name -ErrorAction SilentlyContinue)
         if ($rule.Count -eq 0) { New-NetFirewallRule -PolicyStore PersistentStore -Name $name -DisplayName $display -Group $adGroup -Enabled True -Direction Inbound -Action Allow -Profile Any -Protocol $s[0] -LocalPort $s[1] -RemoteAddress $Remote -Confirm:$false -ErrorAction Stop | Out-Null; $action='Create' }
         else { Set-NetFirewallRule -PolicyStore PersistentStore -Name $name -Enabled False -Confirm:$false -ErrorAction Stop; Set-NetFirewallRule -PolicyStore PersistentStore -Name $name -Enabled True -RemoteAddress $Remote -Confirm:$false -ErrorAction Stop; $action='Update' }
-        $created += $name; Write-Log 'AD-RULE' "Action=$action | Name=$name | Protocol=$($s[0]) | LocalPort=$($s[1]) | Remote=$($Remote -join ',')"
+        $created += $name
+        Write-Host ("{0} AD rule: {1} ({2}/{3}, Remote={4})" -f $action,$name,$s[0],$s[1],($Remote -join ',')) -ForegroundColor Green
+        Write-Log 'AD-RULE' "Action=$action | Name=$name | Protocol=$($s[0]) | LocalPort=$($s[1]) | Remote=$($Remote -join ',')"
     }
     return $created
 }
@@ -244,6 +251,11 @@ function Invoke-EmbeddedServiceSelection {
     $indexed | Format-Table Number,ServiceName,DisplayName,Protocol,LocalAddress,LocalPort,ProcessId -AutoSize | Out-Host
     do {
         $inputSelection=if ($null -ne $ServiceSelection) {$ServiceSelection;$script:ServiceSelection=$null} else {Read-Host 'Enter selections (All, None, numbers, or ranges)'}
+        if ([string]::IsNullOrWhiteSpace([string]$inputSelection)) {
+            Write-Host 'No service selection entered. Skipping service-rule creation.' -ForegroundColor Yellow
+            Write-Log 'SERVICE-SELECTION' 'Value=None | Reason=Blank input'
+            return @()
+        }
         try {$numbers=@(ConvertTo-EmbeddedServiceSelection $inputSelection $indexed.Count);$valid=$true}
         catch {Write-Warning $_.Exception.Message;$valid=$false}
     } until ($valid)
