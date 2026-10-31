@@ -46,7 +46,7 @@ Service rules default to `Any` remote address. Restrict them explicitly when app
 PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.ps1 -ConfigureServices -ServiceSelection 2-4 -ServiceRemoteAddress 192.168.5.0/24
 ```
 
-The service module is at `scripts/current/service-firewall/ServiceFirewallRules.psm1`.
+The service-selection logic is packaged inside `win-firewall-v1.0.ps1`, so copying only that file is sufficient. The separate module at `scripts/current/service-firewall/ServiceFirewallRules.psm1` remains available when the service-selection functionality is needed from another script.
 
 ### Detailed append-only logs
 
