@@ -215,8 +215,8 @@ try {
     if ($ClientNetworks) { $ClientNetworks=ConvertTo-Scope $ClientNetworks }
     if ($Modify) {
         if (-not $ClientNetworks) { throw '-Modify requires -ClientNetworks.' }
-        $role=Get-Role; Assert-Role $role.Workflow $Role
-        if ($role.Workflow -ne 'DC') { throw '-Modify is only available on a Domain Controller.' }
+        $detectedRole=Get-Role; Assert-Role -Actual ([string]$detectedRole.Workflow) -Requested $Role
+        if ($detectedRole.Workflow -ne 'DC') { throw '-Modify is only available on a Domain Controller.' }
         $beforeBackup=Export-State 'firewall-modify-before'; Write-Host "Before backup: $($beforeBackup.Wfw)" -ForegroundColor Green
         Update-ADRules $ClientNetworks
         $afterBackup=Export-State 'firewall-modify-after'; Write-Host "After backup: $($afterBackup.Wfw)" -ForegroundColor Green
@@ -225,14 +225,14 @@ try {
         return
     }
     Set-Baseline; $beforeBackup=Export-State 'firewall-before'; Write-Host "Before backup: $($beforeBackup.Wfw)" -ForegroundColor Green
-    $role=Get-Role; Assert-Role $role.Workflow $Role; Write-Log 'ROLE' "Detected=$($role.Name) | DomainRole=$($role.DomainRole) | Workflow=$($role.Workflow)"; Write-Host "Detected machine: $($role.Name) (DomainRole $($role.DomainRole)); workflow: $($role.Workflow)" -ForegroundColor Gray
+    $detectedRole=Get-Role; Assert-Role -Actual ([string]$detectedRole.Workflow) -Requested $Role; Write-Log 'ROLE' "Detected=$($detectedRole.Name) | DomainRole=$($detectedRole.DomainRole) | Workflow=$($detectedRole.Workflow)"; Write-Host "Detected machine: $($detectedRole.Name) (DomainRole $($detectedRole.DomainRole)); workflow: $($detectedRole.Workflow)" -ForegroundColor Gray
     $preserve=@()
-    if ($role.Workflow -eq 'DC') { $remote=if ($ClientNetworks) { $ClientNetworks } else { @('LocalSubnet4') }; $preserve += Invoke-ADRules $remote; Write-Host "AD rules created or updated: $($preserve.Count)" -ForegroundColor Gray }
+    if ($detectedRole.Workflow -eq 'DC') { $remote=if ($ClientNetworks) { $ClientNetworks } else { @('LocalSubnet4') }; $preserve += Invoke-ADRules $remote; Write-Host "AD rules created or updated: $($preserve.Count)" -ForegroundColor Gray }
     if ($ConfigureServices) { Invoke-ServiceRules }
     $preserve += @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $serviceGroup -ErrorAction SilentlyContinue | Where-Object Name -like "$servicePrefix-*" | Select-Object -ExpandProperty Name)
     Disable-OtherInbound $preserve
     $afterBackup=Export-State 'firewall-after'; Write-Host "After backup: $($afterBackup.Wfw)" -ForegroundColor Green; Write-Host "After report: $($afterBackup.Txt)" -ForegroundColor Green
-    Write-Log 'STATUS' "Completed | Workflow=$($role.Workflow) | AfterBackup=$($afterBackup.Wfw)"
+    Write-Log 'STATUS' "Completed | Workflow=$($detectedRole.Workflow) | AfterBackup=$($afterBackup.Wfw)"
     Write-Host "Workflow completed. Log: $(if ($logPath) { $logPath } else { 'not enabled' })" -ForegroundColor Green
 } catch {
     try { Write-Log 'ERROR' $_.Exception.Message; if ($beforeBackup) { Write-Log 'ROLLBACK' "netsh advfirewall import `"$($beforeBackup.Wfw)`"" } } catch { }
