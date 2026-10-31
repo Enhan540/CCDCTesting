@@ -151,7 +151,7 @@ function New-UniquePaths([string]$Base, [string[]]$Extensions) {
 }
 
 function Get-RuleRows {
-    $rows = foreach ($r in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -ErrorAction Stop)) {
+    $rows = foreach ($r in @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { [string]$_.Enabled -eq 'True' })) {
         $p = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -ErrorAction Stop
         $a = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $r -ErrorAction Stop
         [pscustomobject]@{ DisplayName=$r.DisplayName; Direction=$r.Direction; Protocol=$p.Protocol; LocalPort=(@($p.LocalPort)-join ','); RemotePort=(@($p.RemotePort)-join ','); LocalAddress=(@($a.LocalAddress)-join ','); RemoteAddress=(@($a.RemoteAddress)-join ','); Source=[string]$r.PolicyStoreSourceType }
@@ -228,7 +228,8 @@ function Invoke-ADRules([string[]]$Remote) {
 }
 
 function Update-ADRules([string[]]$Remote) {
-    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $adGroup -Direction Inbound -Enabled True -ErrorAction Stop | Where-Object Name -like "$scriptPrefix*")
+    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop |
+        Where-Object { [string]$_.Group -ceq $adGroup -and [string]$_.Direction -eq 'Inbound' -and [string]$_.Enabled -eq 'True' -and $_.Name -like "$scriptPrefix*" })
     if (-not $rules) { throw 'No enabled local AD rules were found to modify.' }
     foreach ($rule in $rules) {
         Set-NetFirewallRule -PolicyStore PersistentStore -Name $rule.Name -RemoteAddress $Remote -Confirm:$false -ErrorAction Stop
@@ -238,7 +239,8 @@ function Update-ADRules([string[]]$Remote) {
 }
 
 function Disable-OtherInbound([string[]]$Preserve) {
-    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Direction Inbound -Enabled True -ErrorAction Stop)
+    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop |
+        Where-Object { [string]$_.Direction -eq 'Inbound' -and [string]$_.Enabled -eq 'True' })
     $targets = @($rules | Where-Object { $Preserve -notcontains $_.Name })
     foreach ($r in $targets) {
         $p = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -ErrorAction SilentlyContinue
@@ -246,7 +248,8 @@ function Disable-OtherInbound([string[]]$Preserve) {
         Set-NetFirewallRule -PolicyStore PersistentStore -Name $r.Name -Enabled False -Confirm:$false -ErrorAction Stop
         Write-Log 'DISABLE' "Name=$($r.Name) | Protocol=$($p.Protocol) | LocalPort=$(@($p.LocalPort)-join ',') | Remote=$(@($a.RemoteAddress)-join ',')"
     }
-    $nonlocal = @(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -Action Allow -ErrorAction Stop | Where-Object { $Preserve -notcontains $_.Name -and [string]$_.PolicyStoreSourceType -ne 'Local' })
+    $nonlocal = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop |
+        Where-Object { [string]$_.Direction -eq 'Inbound' -and [string]$_.Enabled -eq 'True' -and [string]$_.Action -eq 'Allow' -and $Preserve -notcontains $_.Name -and [string]$_.PolicyStoreSourceType -ne 'Local' })
     Write-Log 'CLEANUP' "LocalFound=$($rules.Count) | Disabled=$($targets.Count) | NonlocalRemaining=$($nonlocal.Count)"
     Write-Host "Enabled local inbound rules found: $($rules.Count)" -ForegroundColor Gray
     Write-Host "Script-created inbound rules preserved: $($rules.Count - $targets.Count)" -ForegroundColor Gray
