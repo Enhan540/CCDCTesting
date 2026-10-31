@@ -215,7 +215,9 @@ function ConvertTo-Scope([string[]]$Values) {
 
 function Get-ManagedRuleIndex {
     $index = @{}
-    foreach ($rule in @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $adGroup -Direction Inbound -ErrorAction Stop | Where-Object { $_.Name -like "$scriptPrefix*" })) {
+    # Windows PowerShell can raise a CIM "no matching objects" error when the
+    # group does not exist yet. That is the normal first-run state.
+    foreach ($rule in @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $adGroup -Direction Inbound -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$scriptPrefix*" })) {
         $index[[string]$rule.Name] = $rule
     }
     return $index
@@ -239,7 +241,7 @@ function Invoke-ADRules([string[]]$Remote, [hashtable]$ExistingRules) {
 }
 
 function Update-ADRules([string[]]$Remote) {
-    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $adGroup -Direction Inbound -Enabled True -ErrorAction Stop |
+    $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group $adGroup -Direction Inbound -Enabled True -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "$scriptPrefix*" })
     if (-not $rules) { throw 'No enabled local AD rules were found to modify.' }
     foreach ($rule in $rules) {
