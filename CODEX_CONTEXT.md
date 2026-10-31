@@ -15,8 +15,10 @@ The user prefers repository changes to be made directly in this folder. Keep the
 ```text
 README.md
 CODEX_CONTEXT.md
-scripts/current/ad-default-firewalls/
+fireme-v1.0.ps1
+In-Progress/
 scripts/current/dc-firewalls-barebones/
+scripts/current/service-firewall/
 archive/older-scripts/
 archive/previous-versions/
 archive/untested/
@@ -26,11 +28,13 @@ The root README contains the user-facing download and usage instructions. Curren
 
 ## Current scripts
 
-### Newest Windows firewall
+### Newest firewall script
 
-File: `win-firewall-v1.0.4.ps1`
+File: `fireme-v1.0.ps1`
 
-The repository-root script is now the newest general-purpose firewall workflow. It supports Client and Domain Controller runs, grouped service-listener discovery, exact local-address rules, UDP dynamic-RPC filtering, inbound cleanup, append-only `-Log` logging, and per-rule AD creation output on DC runs. Blank and noninteractive service selection skips service-rule creation without looping. Bare `-Log` uses `C:\CCDC\FirewallBackups\firewall.log`; `-Log <path>` uses the supplied file. The reusable service module remains at `scripts/current/service-firewall/ServiceFirewallRules.psm1`.
+The repository-root script is now the newest general-purpose firewall workflow. It supports Client and Domain Controller runs, AD-rule creation, inbound cleanup, append-only `-Log` logging, `-Modify`, and `-Export`. It has no service discovery or service-port rule creation. Bare `-Log` uses `C:\CCDC\FirewallBackups\firewall.log`; `-Log <path>` uses the supplied file.
+
+Previous `win-firewall` revisions are preserved in `In-Progress/`. The standalone service module remains at `scripts/current/service-firewall/ServiceFirewallRules.psm1` for separate or historical use.
 
 ### Archived configurable AD firewall
 
@@ -42,7 +46,7 @@ Current tracked revisions include `ad-default-firewalls-v11.ps1`, `v11.1.ps1`, `
 
 Current file: `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`
 
-Detailed usage is documented in `scripts/current/dc-firewalls-barebones/README.md`. It remains the current barebones revision, while `win-firewall-v1.0.4.ps1` is the recommended newest script.
+Detailed usage is documented in `scripts/current/dc-firewalls-barebones/README.md`. It remains the current barebones revision, while `fireme-v1.0.ps1` is the recommended newest script.
 
 Earlier barebones revisions still present in that directory include `v2.ps1` through `v2.4.ps1` and `v3.0.ps1`. The user generally prefers incrementing the active script by renaming it instead of keeping duplicate active copies. v3.1 was originally created while preserving v3.0 as explicitly requested; the active script was subsequently renamed for later revisions.
 

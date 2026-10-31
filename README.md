@@ -1,116 +1,118 @@
-# CCDC Windows Firewall Scripts
+# CCDC Firewall Scripts
 
-This repository contains Windows PowerShell firewall scripts for CCDC competition systems. The newest general-purpose script is in the repository root. The current barebones script and reusable service module remain under `scripts/current/`. Older AD-firewall variants and historical scripts are retained under `archive/`.
+The primary script is `fireme-v1.0.ps1`. It applies the firewall baseline, detects Client or Domain Controller workflows, creates the required AD rules on Domain Controllers, disables other enabled local inbound rules, and writes firewall backups and reports.
 
-## Newest script: `win-firewall-v1.0.4.ps1`
+`fireme-v1.0.ps1` does not discover Windows services or create service-port rules. The previous `win-firewall` revisions are preserved in `In-Progress/` for reference.
 
-Run this script from an elevated Windows PowerShell session, or let it request elevation when needed. It detects whether the host is a Client or Domain Controller, enables all firewall profiles, sets default inbound traffic to Block and outbound traffic to Allow, creates the appropriate script-managed rules, disables other enabled local inbound rules, and exports before/after firewall backups and reports.
+## Primary script: `fireme-v1.0.ps1`
 
-Version `1.0.4` groups service listeners by service/protocol/port, preserves exact local addresses, filters UDP dynamic RPC noise, and prevents selection loops. Version `1.0.3` fixed blank service-selection loops and displays each AD rule created or updated during a DC run. Version `1.0.2` fixed the logging parameter and supports both bare `-Log` and `-Log <path>` forms. Version `1.0.1` corrected role-parameter handling and service-module packaging issues.
-
-The script preserves rules it creates. On a Domain Controller those include the AD rules; with `-ConfigureServices`, they also include selected service-listener rules. On a Client, selected service rules are the only rules created by the script.
-
-### Basic run
+Run from an elevated Windows PowerShell session:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1
 ```
 
-Optional role validation:
+The script enables Domain, Private, and Public firewall profiles, sets default inbound traffic to `Block`, sets default outbound traffic to `Allow`, verifies the baseline, exports an initial backup/report, applies the detected workflow, and exports the final state.
+
+## Client workflow
+
+On a non-DC machine, the script:
+
+1. Applies and verifies the firewall baseline.
+2. Exports the initial `.wfw` and `.txt` files.
+3. Detects the Client role.
+4. Creates no AD rules.
+5. Disables all enabled local inbound rules.
+6. Reports nonlocal or Group Policy rules that remain enabled.
+7. Exports the final `.wfw` and `.txt` files.
+
+Validate the expected role when desired:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Role DC
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Role Client
 ```
 
-### Client network scopes
+## Domain Controller workflow
 
-On a Domain Controller, omit `-ClientNetworks` to use `LocalSubnet4`, or provide explicit IPv4 addresses/CIDR scopes:
+On a Domain Controller, the script creates or updates these AD rules:
+
+- TCP/UDP 53, 88, 389, and 464.
+- TCP 445 and 135.
+- TCP 49152-65535 for dynamic RPC.
+- UDP 123.
+- TCP 3268.
+
+Each AD rule is displayed as it is created or updated. Without `-ClientNetworks`, rules use `LocalSubnet4`:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ClientNetworks 192.168.5.0/24
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Role DC
 ```
 
-### Optional service rules
-
-Use `-ConfigureServices` to discover running Windows services with TCP/UDP listeners. The script displays a numbered list and accepts individual numbers, comma-separated numbers, ranges, `All`, or `None`.
+Use explicit IPv4 addresses or scopes instead:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -ClientNetworks 192.168.5.0/24
 ```
+
+After AD rule verification, the script disables other enabled local inbound rules, reports nonlocal rules, and exports the final state.
+
+## Modify workflow
+
+Update the remote scopes of existing enabled local AD rules without running the full baseline or cleanup workflow:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -ServiceSelection 2,4-6
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Modify -ClientNetworks 192.168.5.10,192.168.5.11
 ```
 
-Service rules default to `Any` remote address. Restrict them explicitly when appropriate:
+`-Modify` requires a detected Domain Controller and `-ClientNetworks`. It does not create missing rules or change unrelated rules.
+
+## Export workflow
+
+Write a report of currently enabled effective firewall rules without changing settings:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -ServiceSelection 2-4 -ServiceRemoteAddress 192.168.5.0/24
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Export
 ```
 
-The service-selection logic is packaged inside `win-firewall-v1.0.4.ps1`, so copying only that file is sufficient. The separate module at `scripts/current/service-firewall/ServiceFirewallRules.psm1` remains available when the service-selection functionality is needed from another script.
+`-Export` creates a TXT report only. It cannot be combined with `-Modify`, `-Role`, or `-ClientNetworks`.
 
-### Detailed append-only logs
+## Logging
 
-Use `-Log` to append detailed firewall activity to the stable default file:
+Enable append-only detailed logging with the default path:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Log
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Log
 ```
 
-Default log path:
+Default log:
 
 ```text
 C:\CCDC\FirewallBackups\firewall.log
 ```
 
-Use an optional custom path when several systems or workflows should share a log:
+Use a custom path:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -ConfigureServices -Log C:\CCDC\FirewallBackups\competition-firewall.log
+PowerShell.exe -ExecutionPolicy Bypass -File .\fireme-v1.0.ps1 -Log C:\CCDC\FirewallBackups\fireme-run.log
 ```
 
-Runs using the same path append to the existing file. Console output remains concise; the log records rule-level creation, update, disable, verification, export, error, and rollback details.
+Runs using the same path append to the existing file. Logs include baseline changes, AD-rule operations, disabled-rule details, backup/report paths, errors, and rollback information.
 
-### Modify and export modes
+## Backups and reports
 
-Update the remote scopes on existing enabled AD rules without running the full baseline or cleanup workflow:
+Full runs create initial and final `.wfw` backups plus enabled-rule `.txt` reports under `C:\CCDC\FirewallBackups`. `-Modify` creates before/after backups and reports. Filenames include the computer name and timestamp.
+
+Restore a backup with:
 
 ```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Modify -ClientNetworks 192.168.5.10,192.168.5.11
+netsh advfirewall import 'C:\CCDC\FirewallBackups\firewall-after-DC02-1435-10302026.wfw'
 ```
 
-Export a report of currently enabled effective rules without changing firewall settings:
+Keep console or out-of-band access available. Inbound cleanup can affect remote management and competition services. Group Policy-controlled rules may remain enabled and are reported as nonlocal rules.
 
-```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\win-firewall-v1.0.4.ps1 -Export
-```
+## Other scripts
 
-Restore a `.wfw` backup with `netsh`:
-
-```powershell
-netsh advfirewall import 'C:\CCDC\FirewallBackups\firewall-after-CLIENT01-0916-10302026.wfw'
-```
-
-Keep console or out-of-band access available. Firewall cleanup can interrupt remote management, application traffic, or CCDC services. Group Policy-controlled rules may remain enabled and are reported as nonlocal rules.
-
-## Current barebones script
-
-The most current legacy barebones workflow is `scripts/current/dc-firewalls-barebones/dc-firewalls-barebones-v3.3.3.ps1`. It provides the earlier AD-focused workflow with automatic Client/DC detection, `LocalSubnet4` support, `-Modify`, `-Export`, before/after backups, and enabled-rule reports.
-
-For its full parameters, behavior, and examples, see [scripts/current/dc-firewalls-barebones/README.md](scripts/current/dc-firewalls-barebones/README.md).
-
-Quick run:
-
-```powershell
-PowerShell.exe -ExecutionPolicy Bypass -File .\dc-firewalls-barebones-v3.3.3.ps1
-```
-
-## Repository layout
-
-- `win-firewall-v1.0.4.ps1` — newest general-purpose Client/DC firewall script; `v1.0.3` is the previous revision.
+- `In-Progress/` — previous `win-firewall-v1.0.3.ps1` and `win-firewall-v1.0.4.ps1` revisions.
 - `scripts/current/dc-firewalls-barebones/` — current barebones script and detailed documentation.
-- `scripts/current/service-firewall/` — reusable service-to-firewall rule module.
-- `archive/previous-versions/ad-default-firewalls/` — archived configurable AD-firewall variants and their documentation.
-- `archive/older-scripts/` — older general CCDC scripts.
-- `archive/untested/` — scripts not yet validated for regular use.
+- `scripts/current/service-firewall/` — standalone service firewall module retained for separate or historical use.
+- `archive/` — archived AD-firewall and older CCDC scripts.
