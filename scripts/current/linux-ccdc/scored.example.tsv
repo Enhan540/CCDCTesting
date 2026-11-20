@@ -1,0 +1,6 @@
+# Copy this to a private manifest and adjust it for each host.
+# Fields are TAB separated. A service row is: service UNIT tcp|udp PORT
+service	sshd.service	tcp	22
+account	scoring
+data	/var/www
+# hook	/usr/local/sbin/ccdc-dump-postgres

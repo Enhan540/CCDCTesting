@@ -136,6 +136,7 @@ Keep console or out-of-band access available. Inbound cleanup can affect remote 
 
 ## Other scripts
 
+- `scripts/current/linux-ccdc/` — Debian, Ubuntu, and CentOS Wazuh installation, scored-service backups, inventory, and security audit scripts; see its [README](scripts/current/linux-ccdc/README.md).
 - `In-Progress/` — previous `win-firewall-v1.0.3.ps1` and `win-firewall-v1.0.4.ps1` revisions.
 - `fireme-v1.0.ps1` — previous primary generation.
 - `fireme-v2.1.ps1` — current primary generation with reduced firewall-query and allocation overhead.
