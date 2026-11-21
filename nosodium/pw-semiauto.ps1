@@ -18,6 +18,12 @@
     UTF-8 text file containing one local account name per line.
 .PARAMETER DomainUsersFile
     UTF-8 text file containing one AD account identity per line.
+.PARAMETER ExcludeServiceAccounts
+    Exclude AD users with one or more Service Principal Names (SPNs).
+.PARAMETER AllExcept
+    Discover all users except qualified names supplied as a comma-separated
+    list or a text file path. Use Local\name (or .\name) and DOMAIN\name.
+    Displays all remaining targets and requires one RESET confirmation.
 .PARAMETER ForceChangeAtLogon
     Require each successfully reset AD user to change the password at next logon.
 .PARAMETER SetPasswordNeverExpires
@@ -30,6 +36,10 @@
     .\pw-semiauto.ps1 -DomainUsersFile C:\CCDC\PCRs\domain-users.txt -ForceChangeAtLogon
 .EXAMPLE
     .\pw-semiauto.ps1 -LocalUsers 'labuser1' -DomainUsers 'CORP\labuser2'
+.EXAMPLE
+    .\pw-semiauto.ps1 -AllExcept 'Local\Guest,CORP\scoring_svc' -ExcludeServiceAccounts
+.EXAMPLE
+    .\pw-semiauto.ps1 -AllExcept C:\CCDC\PCRs\exclude.txt
 .NOTES
     Run elevated for local account changes. AD changes require the ActiveDirectory
     module, domain connectivity, and suitable delegated permissions. Passwords
@@ -42,6 +52,8 @@ param(
     [string[]] $DomainUsers = @(),
     [string] $LocalUsersFile,
     [string] $DomainUsersFile,
+    [switch] $ExcludeServiceAccounts,
+    [string] $AllExcept,
     [switch] $ForceChangeAtLogon,
     [switch] $SetPasswordNeverExpires
 )
@@ -144,6 +156,37 @@ function Confirm-UserSelection {
     }
 }
 
+function Get-ExcludedAccounts {
+    param([string] $Value, [object[]] $Discovered, [string] $DomainPrefix)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { throw '-AllExcept needs a list or file path.' }
+    if (Test-Path -LiteralPath $Value -PathType Leaf) {
+        $entries = @(Get-Content -LiteralPath $Value)
+    } else {
+        if ($Value -match '[:/]' -or $Value -match '\.txt$') {
+            throw "Exclusion file not found: $Value"
+        }
+        $entries = @($Value -split ',')
+    }
+
+    $known = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($user in $Discovered) {
+        $prefix = if ($user.Kind -eq 'Local') { 'Local' } else { $DomainPrefix }
+        [void]$known.Add("$prefix\$($user.Name)")
+    }
+    $excluded = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $entries) {
+        $name = $entry.Trim()
+        if (-not $name -or $name.StartsWith('#')) { continue }
+        if ($name -match '^\.\\(.+)$') { $name = "Local\$($Matches[1])" }
+        if ($name -notmatch '^[^\\]+\\[^\\]+$') { throw "Exclusion must be qualified as Local\name or DOMAIN\name: $name" }
+        if (-not $known.Contains($name)) { throw "Exclusion does not match a discovered account: $name" }
+        [void]$excluded.Add($name)
+    }
+    if ($excluded.Count -eq 0) { throw '-AllExcept contains no account names.' }
+    return ,$excluded
+}
+
 function Set-CredentialFileAcl {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -167,10 +210,19 @@ function Set-CredentialFileAcl {
 $localNames = @(Get-RequestedNames -Names $LocalUsers -FilePath $LocalUsersFile -Kind 'local')
 $domainNames = @(Get-RequestedNames -Names $DomainUsers -FilePath $DomainUsersFile -Kind 'domain')
 $targets = New-Object 'System.Collections.Generic.List[object]'
+$allExceptMode = $PSBoundParameters.ContainsKey('AllExcept')
+if ($allExceptMode -and ($PSBoundParameters.ContainsKey('LocalUsers') -or
+        $PSBoundParameters.ContainsKey('DomainUsers') -or
+        $PSBoundParameters.ContainsKey('LocalUsersFile') -or
+        $PSBoundParameters.ContainsKey('DomainUsersFile'))) {
+    throw '-AllExcept cannot be combined with explicit account names or account-list files.'
+}
+$discoveryMode = $PSBoundParameters.Count -eq 0 -or $allExceptMode -or
+    ($PSBoundParameters.Count -eq 1 -and $PSBoundParameters.ContainsKey('ExcludeServiceAccounts'))
 
 if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
-    if ($PSBoundParameters.Count -eq 0) {
-        Write-Host 'No parameters supplied: interactive discovery mode.' -ForegroundColor Cyan
+    if ($discoveryMode) {
+        Write-Host 'Discovering accounts...' -ForegroundColor Cyan
         $machineName = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) { [Environment]::MachineName } else { $env:COMPUTERNAME }
         Write-Host "`nDiscovering local accounts on ${machineName}..." -ForegroundColor Cyan
         $discoveredLocal = @()
@@ -186,6 +238,7 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
                 } |
                 Sort-Object Name)
         } catch {
+            if ($allExceptMode) { throw "Local user discovery failed; no accounts were changed. $($_.Exception.Message)" }
             Write-Warning "Could not enumerate local users: $($_.Exception.Message)"
         }
 
@@ -193,22 +246,30 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
         $partOfDomain = $false
         $domainCheckFailed = $false
         try { $partOfDomain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain }
-        catch { $domainCheckFailed = $true; Write-Warning "Could not determine domain membership: $($_.Exception.Message)" }
+        catch {
+            if ($allExceptMode) { throw "Domain membership could not be determined; no accounts were changed. $($_.Exception.Message)" }
+            $domainCheckFailed = $true
+            Write-Warning "Could not determine domain membership: $($_.Exception.Message)"
+        }
+        $domainPrefix = $null
         if ($partOfDomain) {
             Write-Host "Discovering Active Directory users visible to this machine..." -ForegroundColor Cyan
             try {
                 Import-Module ActiveDirectory -ErrorAction Stop
-                $discoveredDomain = @(Get-ADUser -Filter * -Properties Enabled -ErrorAction Stop |
+                $domainPrefix = (Get-ADDomain -ErrorAction Stop).NetBIOSName
+                $discoveredDomain = @(Get-ADUser -Filter * -Properties Enabled,ServicePrincipalName -ErrorAction Stop |
                     ForEach-Object {
                         [pscustomobject]@{
                             Kind     = 'Domain'
                             Name     = $_.SamAccountName
                             Identity = $_.DistinguishedName
                             Enabled  = $_.Enabled
+                            HasSPN   = [bool]$_.ServicePrincipalName
                         }
                     } |
                     Sort-Object Name)
             } catch {
+                if ($allExceptMode) { throw "AD discovery failed; no accounts were changed. $($_.Exception.Message)" }
                 Write-Warning "Could not enumerate AD users: $($_.Exception.Message)"
             }
         } elseif ($domainCheckFailed) {
@@ -217,12 +278,27 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
             Write-Host "This machine is not domain-joined; AD users were not queried."
         }
 
-        if ($discoveredLocal.Count -eq 0 -and $discoveredDomain.Count -eq 0) {
+        $allDiscovered = @($discoveredLocal) + @($discoveredDomain)
+        if ($allDiscovered.Count -eq 0) {
+            if ($allExceptMode) { throw 'No accounts were discovered; no passwords were changed.' }
             Write-Host "`nNo local or Active Directory users were discovered. No passwords were changed."
             return
         }
 
-        if ($discoveredLocal.Count -gt 0) {
+        $excluded = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        if ($allExceptMode) {
+            $excluded = Get-ExcludedAccounts -Value $AllExcept -Discovered $allDiscovered -DomainPrefix $domainPrefix
+        }
+        if ($ExcludeServiceAccounts) {
+            $discoveredDomain = @($discoveredDomain | Where-Object { -not $_.HasSPN })
+        }
+
+        if ($allExceptMode) {
+            foreach ($u in (@($discoveredLocal) + @($discoveredDomain))) {
+                $prefix = if ($u.Kind -eq 'Local') { 'Local' } else { $domainPrefix }
+                if (-not $excluded.Contains("$prefix\$($u.Name)")) { $targets.Add($u) }
+            }
+        } elseif ($discoveredLocal.Count -gt 0) {
             Write-Host "`nLocal accounts on ${machineName}:" -ForegroundColor Cyan
             foreach ($u in $discoveredLocal) {
                 if (Confirm-UserSelection -Prompt "Change password for Local user '$($u.Name)'? [y/n]") {
@@ -231,7 +307,7 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
             }
         }
 
-        if ($discoveredDomain.Count -gt 0) {
+        if (-not $allExceptMode -and $discoveredDomain.Count -gt 0) {
             Write-Host "`nActive Directory users:" -ForegroundColor Cyan
             foreach ($u in $discoveredDomain) {
                 if (Confirm-UserSelection -Prompt "Change password for Domain user '$($u.Name)' (Enabled: $($u.Enabled))? [y/n]") {
@@ -261,10 +337,11 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
         Import-Module ActiveDirectory -ErrorAction Stop
         foreach ($name in $domainNames) {
             try {
-                $user = Get-ADUser -Identity $name -Properties SamAccountName -ErrorAction Stop
+                $user = Get-ADUser -Identity $name -Properties SamAccountName,ServicePrincipalName -ErrorAction Stop
             } catch {
                 throw "Could not resolve AD user '$name': $($_.Exception.Message)"
             }
+            if ($ExcludeServiceAccounts -and $user.ServicePrincipalName) { continue }
             $targets.Add([pscustomobject]@{
                 Kind     = 'Domain'
                 Name     = $user.SamAccountName
@@ -272,6 +349,14 @@ if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
             })
         }
     }
+}
+
+if ($ForceChangeAtLogon -and @($targets | Where-Object Kind -eq 'Local').Count -gt 0) {
+    throw '-ForceChangeAtLogon applies only to AD users. Remove local users or omit the switch.'
+}
+if ($targets.Count -eq 0) {
+    Write-Host 'No accounts remain after filtering. No passwords were changed.'
+    return
 }
 
 Write-Host "`nAccounts selected for password reset:" -ForegroundColor Cyan
