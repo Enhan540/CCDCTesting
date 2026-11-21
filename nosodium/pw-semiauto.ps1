@@ -7,6 +7,8 @@
     previews all targets, and requires one explicit confirmation before changes.
     Successful credentials are written only to a timestamped file protected by
     an ACL for the current user and local Administrators.
+    With no parameters, discovers local and Active Directory users and prompts
+    y/n for each account to select targets for password reset.
 .PARAMETER LocalUsers
     Local account names to reset. Can be combined with LocalUsersFile.
 .PARAMETER DomainUsers
@@ -20,6 +22,8 @@
     Require each successfully reset AD user to change the password at next logon.
 .PARAMETER SetPasswordNeverExpires
     Set PasswordNeverExpires for successfully reset AD users. Off by default.
+.EXAMPLE
+    .\pw-semiauto.ps1
 .EXAMPLE
     .\pw-semiauto.ps1 -LocalUsers 'labuser1','labuser2'
 .EXAMPLE
@@ -128,6 +132,18 @@ function Resolve-LocalUser {
     throw "Local user not found: $Name"
 }
 
+function Confirm-UserSelection {
+    param([Parameter(Mandatory = $true)][string] $Prompt)
+
+    while ($true) {
+        $raw = Read-Host $Prompt
+        $answer = if ($null -eq $raw) { '' } else { $raw.Trim() }
+        if ($answer -match '^(y|yes)$') { return $true }
+        if ($answer -match '^(n|no)$') { return $false }
+        Write-Host "Please enter 'y' or 'n'." -ForegroundColor Yellow
+    }
+}
+
 function Set-CredentialFileAcl {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -150,36 +166,115 @@ function Set-CredentialFileAcl {
 
 $localNames = @(Get-RequestedNames -Names $LocalUsers -FilePath $LocalUsersFile -Kind 'local')
 $domainNames = @(Get-RequestedNames -Names $DomainUsers -FilePath $DomainUsersFile -Kind 'domain')
-if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
-    throw 'Select at least one account with -LocalUsers, -DomainUsers, or a user-list file.'
-}
-if ($ForceChangeAtLogon -and $localNames.Count -gt 0) {
-    throw '-ForceChangeAtLogon applies only to AD users. Remove local users from this run or omit the switch.'
-}
-
 $targets = New-Object 'System.Collections.Generic.List[object]'
-foreach ($name in $localNames) {
-    $resolved = Resolve-LocalUser -Name $name
-    $targets.Add([pscustomobject]@{ Kind = 'Local'; Name = $resolved.Name; Identity = $resolved.Path })
-}
 
-if ($domainNames.Count -gt 0) {
-    Import-Module ActiveDirectory -ErrorAction Stop
-    foreach ($name in $domainNames) {
+if ($localNames.Count -eq 0 -and $domainNames.Count -eq 0) {
+    if ($PSBoundParameters.Count -eq 0) {
+        Write-Host 'No parameters supplied: interactive discovery mode.' -ForegroundColor Cyan
+        $machineName = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) { [Environment]::MachineName } else { $env:COMPUTERNAME }
+        Write-Host "`nDiscovering local accounts on ${machineName}..." -ForegroundColor Cyan
+        $discoveredLocal = @()
         try {
-            $user = Get-ADUser -Identity $name -Properties SamAccountName -ErrorAction Stop
+            $computer = [ADSI]"WinNT://$machineName"
+            $discoveredLocal = @($computer.Children | Where-Object { $_.SchemaClassName -eq 'User' } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Kind     = 'Local'
+                        Name     = [string]$_.Name
+                        Identity = [string]$_.Path
+                    }
+                } |
+                Sort-Object Name)
         } catch {
-            throw "Could not resolve AD user '$name': $($_.Exception.Message)"
+            Write-Warning "Could not enumerate local users: $($_.Exception.Message)"
         }
-        $targets.Add([pscustomobject]@{
-            Kind = 'Domain'
-            Name = $user.SamAccountName
-            Identity = $user.DistinguishedName
-        })
+
+        $discoveredDomain = @()
+        $partOfDomain = $false
+        $domainCheckFailed = $false
+        try { $partOfDomain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain }
+        catch { $domainCheckFailed = $true; Write-Warning "Could not determine domain membership: $($_.Exception.Message)" }
+        if ($partOfDomain) {
+            Write-Host "Discovering Active Directory users visible to this machine..." -ForegroundColor Cyan
+            try {
+                Import-Module ActiveDirectory -ErrorAction Stop
+                $discoveredDomain = @(Get-ADUser -Filter * -Properties Enabled -ErrorAction Stop |
+                    ForEach-Object {
+                        [pscustomobject]@{
+                            Kind     = 'Domain'
+                            Name     = $_.SamAccountName
+                            Identity = $_.DistinguishedName
+                            Enabled  = $_.Enabled
+                        }
+                    } |
+                    Sort-Object Name)
+            } catch {
+                Write-Warning "Could not enumerate AD users: $($_.Exception.Message)"
+            }
+        } elseif ($domainCheckFailed) {
+            Write-Host "AD discovery skipped because domain membership could not be determined."
+        } else {
+            Write-Host "This machine is not domain-joined; AD users were not queried."
+        }
+
+        if ($discoveredLocal.Count -eq 0 -and $discoveredDomain.Count -eq 0) {
+            Write-Host "`nNo local or Active Directory users were discovered. No passwords were changed."
+            return
+        }
+
+        if ($discoveredLocal.Count -gt 0) {
+            Write-Host "`nLocal accounts on ${machineName}:" -ForegroundColor Cyan
+            foreach ($u in $discoveredLocal) {
+                if (Confirm-UserSelection -Prompt "Change password for Local user '$($u.Name)'? [y/n]") {
+                    $targets.Add([pscustomobject]@{ Kind = $u.Kind; Name = $u.Name; Identity = $u.Identity })
+                }
+            }
+        }
+
+        if ($discoveredDomain.Count -gt 0) {
+            Write-Host "`nActive Directory users:" -ForegroundColor Cyan
+            foreach ($u in $discoveredDomain) {
+                if (Confirm-UserSelection -Prompt "Change password for Domain user '$($u.Name)' (Enabled: $($u.Enabled))? [y/n]") {
+                    $targets.Add([pscustomobject]@{ Kind = $u.Kind; Name = $u.Name; Identity = $u.Identity })
+                }
+            }
+        }
+
+        if ($targets.Count -eq 0) {
+            Write-Host "`nNo accounts selected for password reset. No passwords were changed."
+            return
+        }
+    } else {
+        throw 'Select at least one account with -LocalUsers, -DomainUsers, or a user-list file.'
+    }
+} else {
+    if ($ForceChangeAtLogon -and $localNames.Count -gt 0) {
+        throw '-ForceChangeAtLogon applies only to AD users. Remove local users from this run or omit the switch.'
+    }
+
+    foreach ($name in $localNames) {
+        $resolved = Resolve-LocalUser -Name $name
+        $targets.Add([pscustomobject]@{ Kind = 'Local'; Name = $resolved.Name; Identity = $resolved.Path })
+    }
+
+    if ($domainNames.Count -gt 0) {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        foreach ($name in $domainNames) {
+            try {
+                $user = Get-ADUser -Identity $name -Properties SamAccountName -ErrorAction Stop
+            } catch {
+                throw "Could not resolve AD user '$name': $($_.Exception.Message)"
+            }
+            $targets.Add([pscustomobject]@{
+                Kind     = 'Domain'
+                Name     = $user.SamAccountName
+                Identity = $user.DistinguishedName
+            })
+        }
     }
 }
 
-Write-Host 'Accounts selected for password reset:' -ForegroundColor Cyan
+Write-Host "`nAccounts selected for password reset:" -ForegroundColor Cyan
 $targets | Select-Object Kind, Name | Format-Table -AutoSize | Out-Host
 $confirmation = Read-Host "Type RESET to change passwords for all $($targets.Count) selected account(s)"
 if ($confirmation -cne 'RESET') {
